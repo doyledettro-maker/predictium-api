@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import (
+    admin_router,
     auth_router,
     billing_router,
     health_router,
@@ -84,6 +85,7 @@ app.include_router(auth_router)
 app.include_router(predictions_router)
 app.include_router(billing_router)
 app.include_router(webhooks_router)
+app.include_router(admin_router)  # TEMPORARY - Remove after updating beta users
 
 
 @app.get("/")
