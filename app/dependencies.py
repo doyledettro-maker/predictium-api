@@ -100,6 +100,7 @@ async def get_current_user_with_db(
             role="subscriber",
         )
         db.add(user)
+        await db.flush()  # Generate user.id before creating subscription
         
         # Create default subscription
         subscription = Subscription(

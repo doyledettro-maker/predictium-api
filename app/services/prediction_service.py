@@ -9,6 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import unquote
 
 import boto3
 from botocore.exceptions import ClientError
@@ -122,26 +123,30 @@ class PredictionService:
         
         Args:
             game_id: The game identifier (e.g., "PHI@MEM_2025-12-30").
+                     May be URL-encoded (e.g., "PHI%40MEM_2025-12-30").
             
         Returns:
             Game detail data matching BackendGameDetailFile schema,
             or None if not found.
         """
-        cache_key = f"game:{game_id}"
+        # URL-decode the game_id in case it's encoded (e.g., %40 -> @)
+        decoded_game_id = unquote(game_id)
+        
+        cache_key = f"game:{decoded_game_id}"
         
         # Check cache first
         if cache_key in self._cache:
             return self._cache[cache_key]
         
         # Sanitize game_id to prevent path traversal
-        safe_game_id = game_id.replace("/", "_").replace("\\", "_").replace("..", "_")
+        safe_game_id = decoded_game_id.replace("/", "_").replace("\\", "_").replace("..", "_")
         
         # Fetch from S3
         data = await self._read_s3_object(f"game_details/{safe_game_id}.json")
         
         if data:
             self._cache[cache_key] = data
-            logger.debug(f"Cached game detail: {game_id}")
+            logger.debug(f"Cached game detail: {decoded_game_id}")
         
         return data
 
