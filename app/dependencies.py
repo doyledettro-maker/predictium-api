@@ -103,10 +103,12 @@ async def get_current_user_with_db(
         await db.flush()  # Generate user.id before creating subscription
         
         # Create default subscription
+        # BETA: Auto-grant elite access to all new users
+        # TODO: Change back to plan="free" after beta ends
         subscription = Subscription(
             user_id=user.id,
-            plan="free",
-            status="trialing",
+            plan="elite",
+            status="active",
         )
         db.add(subscription)
         
