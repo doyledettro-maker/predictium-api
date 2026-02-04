@@ -8,3 +8,8 @@ env/
 dist/
 build/
 .pytest_cache/
+
+# Temporary/secret files
+temp-*.json
+*.pem
+*.key
