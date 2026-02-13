@@ -19,9 +19,6 @@ class SubscriptionInfo(BaseModel):
     status: str
     is_active: bool
     has_premium_access: bool
-    # Legacy fields for backward compatibility
-    has_pro_access: bool
-    has_elite_access: bool
     trial_ends_at: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
 
@@ -63,8 +60,6 @@ async def get_current_user_info(
             "status": user.subscription.status,
             "is_active": user.subscription.is_active,
             "has_premium_access": user.subscription.has_premium_access,
-            "has_pro_access": user.subscription.has_pro_access,
-            "has_elite_access": user.subscription.has_elite_access,
             "trial_ends_at": user.subscription.trial_ends_at,
             "current_period_end": user.subscription.current_period_end,
         }

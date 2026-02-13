@@ -103,11 +103,11 @@ async def get_current_user_with_db(
         await db.flush()  # Generate user.id before creating subscription
         
         # Create default subscription
-        # BETA: Auto-grant elite access to all new users
+        # BETA: Auto-grant premium access to all new users
         # TODO: Change back to plan="free" after beta ends
         subscription = Subscription(
             user_id=user.id,
-            plan="elite",
+            plan="premium",
             status="active",
         )
         db.add(subscription)
@@ -181,6 +181,5 @@ def require_plan(required_plans: list[str]):
 
 
 # Convenience dependencies for common plan requirements
-require_pro_or_elite = require_plan(["pro", "elite"])
-require_elite = require_plan(["elite"])
-require_any_active = require_plan(["free", "pro", "elite"])
+require_premium = require_plan(["premium"])
+require_any_active = require_plan(["free", "premium"])

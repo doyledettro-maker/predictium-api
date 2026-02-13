@@ -23,7 +23,7 @@ class Coupon(Base):
     Attributes:
         code: Unique coupon code (primary key)
         description: Optional description of the coupon
-        plan: Plan granted by the coupon - free, pro, or elite
+        plan: Plan granted by the coupon - free or premium
         trial_days: Number of trial days granted
         max_uses: Maximum redemptions allowed, NULL for unlimited
         current_uses: Current number of redemptions
@@ -46,7 +46,7 @@ class Coupon(Base):
     plan: Mapped[str] = mapped_column(
         String,
         nullable=False,
-        default="pro",
+        default="premium",
     )
     trial_days: Mapped[int] = mapped_column(
         Integer,

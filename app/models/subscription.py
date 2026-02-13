@@ -25,7 +25,7 @@ class Subscription(Base):
         user_id: Foreign key to users table
         stripe_customer_id: Stripe customer ID
         stripe_subscription_id: Stripe subscription ID
-        plan: Subscription plan - free, pro, or elite
+        plan: Subscription plan - free or premium
         status: Subscription status - trialing, active, past_due, canceled, expired
         trial_ends_at: When the trial period ends
         current_period_end: When the current billing period ends
@@ -106,13 +106,3 @@ class Subscription(Base):
         """Check if user has Premium access."""
         return self.is_active and self.plan == "premium"
 
-    # Legacy aliases for backward compatibility during migration
-    @property
-    def has_pro_access(self) -> bool:
-        """Legacy: maps to premium access."""
-        return self.has_premium_access
-
-    @property
-    def has_elite_access(self) -> bool:
-        """Legacy: maps to premium access."""
-        return self.has_premium_access

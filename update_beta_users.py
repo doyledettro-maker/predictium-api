@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update beta users to elite plan."""
+"""Update beta users to premium plan."""
 
 import asyncio
 import os
@@ -14,7 +14,7 @@ from app.models.user import User
 from app.models.subscription import Subscription
 
 async def update_beta_users():
-    """Update all beta users to elite plan."""
+    """Update all beta users to premium plan."""
     async with async_session_maker() as session:
         # Get all users with their subscriptions
         result = await session.execute(
@@ -24,7 +24,7 @@ async def update_beta_users():
         users = result.scalars().all()
         
         print("=" * 80)
-        print("Updating Beta Users to Elite Plan")
+        print("Updating Beta Users to Premium Plan")
         print("=" * 80)
         
         updated_count = 0
@@ -32,20 +32,18 @@ async def update_beta_users():
         
         for user in users:
             if user.subscription:
-                # Update existing subscription to elite
-                if user.subscription.plan != "elite":
-                    print(f"Updating {user.email}: {user.subscription.plan} -> elite")
-                    user.subscription.plan = "elite"
-                    user.subscription.status = "active"  # Ensure it's active
+                if user.subscription.plan != "premium":
+                    print(f"Updating {user.email}: {user.subscription.plan} -> premium")
+                    user.subscription.plan = "premium"
+                    user.subscription.status = "active"
                     updated_count += 1
                 else:
-                    print(f"Skipping {user.email}: already elite")
+                    print(f"Skipping {user.email}: already premium")
             else:
-                # Create elite subscription
-                print(f"Creating elite subscription for {user.email}")
+                print(f"Creating premium subscription for {user.email}")
                 subscription = Subscription(
                     user_id=user.id,
-                    plan="elite",
+                    plan="premium",
                     status="active",
                 )
                 session.add(subscription)
@@ -54,8 +52,8 @@ async def update_beta_users():
         await session.commit()
         
         print("=" * 80)
-        print(f"Updated {updated_count} subscriptions to elite")
-        print(f"Created {created_count} new elite subscriptions")
+        print(f"Updated {updated_count} subscriptions to premium")
+        print(f"Created {created_count} new premium subscriptions")
         print("=" * 80)
         
         # Verify
@@ -66,14 +64,12 @@ async def update_beta_users():
         users = result.scalars().all()
         
         print("\nVerification:")
-        print(f"{'Email':<40} {'Plan':<10} {'Status':<12} {'Has Pro':<8} {'Has Elite':<8}")
+        print(f"{'Email':<40} {'Plan':<10} {'Status':<12} {'Premium':<8}")
         print("-" * 80)
         for user in users:
             if user.subscription:
                 sub = user.subscription
-                has_pro = sub.has_pro_access
-                has_elite = sub.has_elite_access
-                print(f"{user.email:<40} {sub.plan:<10} {sub.status:<12} {str(has_pro):<8} {str(has_elite):<8}")
+                print(f"{user.email:<40} {sub.plan:<10} {sub.status:<12} {str(sub.has_premium_access):<8}")
 
 if __name__ == "__main__":
     asyncio.run(update_beta_users())

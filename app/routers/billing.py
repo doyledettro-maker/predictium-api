@@ -27,9 +27,6 @@ class SubscriptionResponse(BaseModel):
     status: str
     is_active: bool
     has_premium_access: bool
-    # Legacy fields for backward compatibility
-    has_pro_access: bool
-    has_elite_access: bool
     trial_ends_at: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     stripe_customer_id: Optional[str] = None
@@ -93,8 +90,6 @@ async def get_user_subscription(
         "status": subscription.status,
         "is_active": subscription.is_active,
         "has_premium_access": subscription.has_premium_access,
-        "has_pro_access": subscription.has_pro_access,
-        "has_elite_access": subscription.has_elite_access,
         "trial_ends_at": subscription.trial_ends_at,
         "current_period_end": subscription.current_period_end,
         "stripe_customer_id": subscription.stripe_customer_id,
