@@ -102,11 +102,17 @@ class Subscription(Base):
         return self.status in ("trialing", "active")
 
     @property
+    def has_premium_access(self) -> bool:
+        """Check if user has Premium access."""
+        return self.is_active and self.plan == "premium"
+
+    # Legacy aliases for backward compatibility during migration
+    @property
     def has_pro_access(self) -> bool:
-        """Check if user has Pro or Elite access."""
-        return self.is_active and self.plan in ("pro", "elite")
+        """Legacy: maps to premium access."""
+        return self.has_premium_access
 
     @property
     def has_elite_access(self) -> bool:
-        """Check if user has Elite access."""
-        return self.is_active and self.plan == "elite"
+        """Legacy: maps to premium access."""
+        return self.has_premium_access

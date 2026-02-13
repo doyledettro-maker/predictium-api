@@ -26,6 +26,8 @@ class SubscriptionResponse(BaseModel):
     plan: str
     status: str
     is_active: bool
+    has_premium_access: bool
+    # Legacy fields for backward compatibility
     has_pro_access: bool
     has_elite_access: bool
     trial_ends_at: Optional[datetime] = None
@@ -51,7 +53,7 @@ class RedeemCouponResponse(BaseModel):
 class CheckoutSessionRequest(BaseModel):
     """Request model for creating a checkout session."""
     
-    plan: str  # "pro" or "elite"
+    plan: str  # "premium"
     success_url: str
     cancel_url: str
 
@@ -90,6 +92,7 @@ async def get_user_subscription(
         "plan": subscription.plan,
         "status": subscription.status,
         "is_active": subscription.is_active,
+        "has_premium_access": subscription.has_premium_access,
         "has_pro_access": subscription.has_pro_access,
         "has_elite_access": subscription.has_elite_access,
         "trial_ends_at": subscription.trial_ends_at,
@@ -229,18 +232,14 @@ async def create_checkout_session(
         HTTPException(400): If plan is invalid.
     """
     # Validate plan
-    if request.plan not in ("pro", "elite"):
+    if request.plan != "premium":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid plan. Must be 'pro' or 'elite'.",
+            detail="Invalid plan. Must be 'premium'.",
         )
     
     # Get price ID for plan
-    price_id = (
-        settings.stripe_pro_price_id
-        if request.plan == "pro"
-        else settings.stripe_elite_price_id
-    )
+    price_id = settings.stripe_premium_price_id
     
     if not price_id:
         raise HTTPException(

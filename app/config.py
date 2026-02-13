@@ -29,8 +29,7 @@ class Settings(BaseSettings):
     # Stripe
     stripe_secret_key: str
     stripe_webhook_secret: str
-    stripe_pro_price_id: str = ""
-    stripe_elite_price_id: str = ""
+    stripe_premium_price_id: str = ""
 
     # AWS S3
     s3_predictions_bucket: str = "predictium-predictions"

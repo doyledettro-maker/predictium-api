@@ -93,12 +93,9 @@ async def get_game_detail(
         )
     
     # Filter data based on subscription plan
-    if user.subscription and not user.subscription.has_pro_access:
-        # Free tier: return limited data
+    # Premium users get everything; free users get basic predictions only
+    if not user.subscription or not user.subscription.has_premium_access:
         game_detail = _filter_for_free_tier(game_detail)
-    elif user.subscription and not user.subscription.has_elite_access:
-        # Pro tier: return most data, but not elite-only features
-        game_detail = _filter_for_pro_tier(game_detail)
     
     return game_detail
 
@@ -107,7 +104,8 @@ def _filter_for_free_tier(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Filter game detail data for free tier users.
     
-    Free tier gets basic predictions only.
+    Free tier gets basic predictions only — no player impact,
+    no scenario analysis, no prediction history.
     """
     return {
         "prediction_id": data.get("prediction_id"),
@@ -122,15 +120,3 @@ def _filter_for_free_tier(data: Dict[str, Any]) -> Dict[str, Any]:
         },
         "context": data.get("context"),
     }
-
-
-def _filter_for_pro_tier(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Filter game detail data for Pro tier users.
-    
-    Pro tier gets most data except elite-only features.
-    """
-    # Pro gets everything except prediction_history (elite only)
-    filtered = dict(data)
-    filtered.pop("prediction_history", None)
-    return filtered

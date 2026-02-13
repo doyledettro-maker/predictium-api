@@ -294,10 +294,8 @@ class StripeService:
 
     def _price_to_plan(self, price_id: str) -> str:
         """Map Stripe price ID to internal plan name."""
-        if price_id == self.settings.stripe_pro_price_id:
-            return "pro"
-        elif price_id == self.settings.stripe_elite_price_id:
-            return "elite"
+        if price_id == self.settings.stripe_premium_price_id:
+            return "premium"
         return "free"
 
     def _stripe_status_to_internal(self, stripe_status: str) -> str:
