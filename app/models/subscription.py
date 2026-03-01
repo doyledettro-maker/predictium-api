@@ -103,6 +103,11 @@ class Subscription(Base):
 
     @property
     def has_premium_access(self) -> bool:
-        """Check if user has Premium access."""
-        return self.is_active and self.plan == "premium"
+        """Check if user has Premium access (any pro plan or legacy premium)."""
+        return self.is_active and self.plan in ("premium", "pro_weekly", "pro_monthly", "pro_season")
+
+    @property
+    def has_data_api_access(self) -> bool:
+        """Check if user has Data API access."""
+        return self.is_active and self.plan in ("data_api",)
 

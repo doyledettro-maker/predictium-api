@@ -29,7 +29,11 @@ class Settings(BaseSettings):
     # Stripe
     stripe_secret_key: str
     stripe_webhook_secret: str
-    stripe_premium_price_id: str = ""
+    stripe_premium_price_id: str = ""  # backwards compat → maps to monthly
+    stripe_weekly_price_id: str = ""
+    stripe_monthly_price_id: str = ""
+    stripe_season_price_id: str = ""
+    stripe_data_api_price_id: str = ""
 
     # AWS S3
     s3_predictions_bucket: str = "predictium-predictions"

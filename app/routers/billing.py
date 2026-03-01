@@ -1,5 +1,6 @@
 """Billing and subscription endpoints."""
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -16,8 +17,23 @@ from app.models.subscription import Subscription
 from app.models.user import User
 from app.services.stripe_service import stripe_service
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/billing", tags=["Billing"])
 settings = get_settings()
+
+PLAN_PRICE_MAP = {
+    "pro_weekly": settings.stripe_weekly_price_id,
+    "pro_monthly": settings.stripe_monthly_price_id,
+    "pro_season": settings.stripe_season_price_id,
+    "data_api": settings.stripe_data_api_price_id,
+}
+
+# Plans that use one-time payment mode instead of subscription
+ONE_TIME_PLANS = {"pro_season"}
+
+# Plans eligible for free trial
+TRIAL_ELIGIBLE_PLANS = {"pro_weekly", "pro_monthly"}
 
 
 class SubscriptionResponse(BaseModel):
@@ -49,10 +65,11 @@ class RedeemCouponResponse(BaseModel):
 
 class CheckoutSessionRequest(BaseModel):
     """Request model for creating a checkout session."""
-    
-    plan: str  # "premium"
+
+    plan: str  # "pro_weekly", "pro_monthly", "pro_season", "data_api"
     success_url: str
     cancel_url: str
+    trial_days: Optional[int] = None
 
 
 class CheckoutSessionResponse(BaseModel):
@@ -227,32 +244,42 @@ async def create_checkout_session(
         HTTPException(400): If plan is invalid.
     """
     # Validate plan
-    if request.plan != "premium":
+    if request.plan not in PLAN_PRICE_MAP:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid plan. Must be 'premium'.",
+            detail=f"Invalid plan. Must be one of: {', '.join(PLAN_PRICE_MAP.keys())}",
         )
-    
+
     # Get price ID for plan
-    price_id = settings.stripe_premium_price_id
-    
+    price_id = PLAN_PRICE_MAP[request.plan]
+
     if not price_id:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Stripe price ID not configured for this plan",
         )
-    
+
+    # Determine checkout mode
+    mode = "payment" if request.plan in ONE_TIME_PLANS else "subscription"
+
+    # Determine trial days (only for eligible subscription plans)
+    trial_days = None
+    if request.trial_days and request.plan in TRIAL_ELIGIBLE_PLANS:
+        trial_days = request.trial_days
+
+    logger.info(f"Creating checkout for plan={request.plan}, mode={mode}, trial_days={trial_days}")
+
     # Get or create subscription record
     result = await db.execute(
         select(Subscription).where(Subscription.user_id == user.id)
     )
     subscription = result.scalar_one_or_none()
-    
+
     if not subscription:
         subscription = Subscription(user_id=user.id)
         db.add(subscription)
         await db.flush()
-    
+
     # Get or create Stripe customer
     if not subscription.stripe_customer_id:
         customer_id = await stripe_service.create_customer(
@@ -263,15 +290,17 @@ async def create_checkout_session(
         await db.commit()
     else:
         customer_id = subscription.stripe_customer_id
-    
+
     # Create checkout session
     checkout_url = await stripe_service.create_checkout_session(
         customer_id=customer_id,
         price_id=price_id,
         success_url=request.success_url,
         cancel_url=request.cancel_url,
+        mode=mode,
+        trial_days=trial_days,
     )
-    
+
     return {"checkout_url": checkout_url}
 
 

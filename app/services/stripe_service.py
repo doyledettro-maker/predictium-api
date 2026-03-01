@@ -63,18 +63,20 @@ class StripeService:
         price_id: str,
         success_url: str,
         cancel_url: str,
+        mode: str = "subscription",
         trial_days: Optional[int] = None,
     ) -> str:
         """
         Create a Stripe checkout session.
-        
+
         Args:
             customer_id: Stripe customer ID.
             price_id: Stripe price ID for the subscription.
             success_url: URL to redirect to on success.
             cancel_url: URL to redirect to on cancellation.
-            trial_days: Optional number of trial days.
-            
+            mode: "subscription" or "payment" (one-time).
+            trial_days: Optional number of trial days (subscription mode only).
+
         Returns:
             Checkout session URL.
         """
@@ -88,18 +90,18 @@ class StripeService:
                         "quantity": 1,
                     },
                 ],
-                "mode": "subscription",
+                "mode": mode,
                 "success_url": success_url,
                 "cancel_url": cancel_url,
             }
-            
-            if trial_days and trial_days > 0:
+
+            if mode == "subscription" and trial_days and trial_days > 0:
                 session_params["subscription_data"] = {
                     "trial_period_days": trial_days,
                 }
-            
+
             session = stripe.checkout.Session.create(**session_params)
-            logger.info(f"Created checkout session: {session.id}")
+            logger.info(f"Created checkout session: {session.id} (mode={mode})")
             return session.url
         except stripe.StripeError as e:
             logger.error(f"Failed to create checkout session: {e}")
@@ -167,9 +169,10 @@ class StripeService:
     ) -> None:
         """
         Handle checkout.session.completed webhook event.
-        
+
         Updates the user's subscription with Stripe IDs and status.
-        
+        Supports both subscription and one-time payment (season pass) modes.
+
         Args:
             event: Stripe webhook event data.
             db: Database session.
@@ -177,18 +180,8 @@ class StripeService:
         session = event["data"]["object"]
         customer_id = session["customer"]
         subscription_id = session.get("subscription")
-        
-        if not subscription_id:
-            logger.warning("Checkout completed without subscription ID")
-            return
-        
-        # Fetch the subscription to get plan details
-        stripe_sub = stripe.Subscription.retrieve(subscription_id)
-        
-        # Determine plan from price ID
-        price_id = stripe_sub["items"]["data"][0]["price"]["id"]
-        plan = self._price_to_plan(price_id)
-        
+        mode = session.get("mode", "subscription")
+
         # Find user by Stripe customer ID
         result = await db.execute(
             select(Subscription).where(
@@ -196,8 +189,33 @@ class StripeService:
             )
         )
         subscription = result.scalar_one_or_none()
-        
-        if subscription:
+
+        if not subscription:
+            logger.warning(f"No subscription found for customer: {customer_id}")
+            return
+
+        if mode == "payment":
+            # One-time payment (season pass)
+            price_id = session["line_items"]["data"][0]["price"]["id"] if "line_items" in session else None
+            if not price_id:
+                # line_items may not be expanded; determine from metadata or default to season
+                price_id = self.settings.stripe_season_price_id
+            plan = self._price_to_plan(price_id)
+            subscription.plan = plan
+            subscription.status = "active"
+            # Season pass expires at end of NBA Finals (~June 30, 2026)
+            subscription.current_period_end = datetime(2026, 6, 30, tzinfo=timezone.utc)
+            logger.info(f"Activated season pass for customer: {customer_id}, plan={plan}")
+        else:
+            # Recurring subscription
+            if not subscription_id:
+                logger.warning("Subscription checkout completed without subscription ID")
+                return
+
+            stripe_sub = stripe.Subscription.retrieve(subscription_id)
+            price_id = stripe_sub["items"]["data"][0]["price"]["id"]
+            plan = self._price_to_plan(price_id)
+
             subscription.stripe_subscription_id = subscription_id
             subscription.plan = plan
             subscription.status = self._stripe_status_to_internal(stripe_sub["status"])
@@ -210,11 +228,9 @@ class StripeService:
                     stripe_sub["trial_end"],
                     tz=timezone.utc,
                 )
-            
-            await db.commit()
-            logger.info(f"Updated subscription for customer: {customer_id}")
-        else:
-            logger.warning(f"No subscription found for customer: {customer_id}")
+            logger.info(f"Updated subscription for customer: {customer_id}, plan={plan}")
+
+        await db.commit()
 
     async def handle_subscription_updated(
         self,
@@ -294,8 +310,18 @@ class StripeService:
 
     def _price_to_plan(self, price_id: str) -> str:
         """Map Stripe price ID to internal plan name."""
-        if price_id == self.settings.stripe_premium_price_id:
-            return "premium"
+        price_plan_map = {
+            self.settings.stripe_weekly_price_id: "pro_weekly",
+            self.settings.stripe_monthly_price_id: "pro_monthly",
+            self.settings.stripe_season_price_id: "pro_season",
+            self.settings.stripe_data_api_price_id: "data_api",
+            self.settings.stripe_premium_price_id: "pro_monthly",  # backwards compat
+        }
+        # Filter out empty keys (unconfigured price IDs)
+        plan = price_plan_map.get(price_id) if price_id else None
+        if plan:
+            return plan
+        logger.warning(f"Unknown price ID: {price_id}")
         return "free"
 
     def _stripe_status_to_internal(self, stripe_status: str) -> str:
