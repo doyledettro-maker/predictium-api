@@ -102,13 +102,13 @@ async def get_current_user_with_db(
         db.add(user)
         await db.flush()  # Generate user.id before creating subscription
         
-        # Create default subscription
-        # BETA: Auto-grant premium access to all new users
-        # TODO: Change back to plan="free" after beta ends
+        # Create default subscription with 7-day free trial
+        from datetime import datetime, timedelta, timezone as tz
         subscription = Subscription(
             user_id=user.id,
             plan="premium",
-            status="active",
+            status="trialing",
+            trial_ends_at=datetime.now(tz.utc) + timedelta(days=7),
         )
         db.add(subscription)
         
