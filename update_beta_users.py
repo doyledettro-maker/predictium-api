@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 # Set environment variable for database URL
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres::jpN:mz#ir48nl[Lewo|_4$hi9C_@predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com:5432/predictium"
+if "DATABASE_URL" not in os.environ:
+    raise SystemExit("ERROR: set DATABASE_URL in the environment — credentials are never committed.")
 
 from app.db.database import async_session_maker
 from app.models.user import User

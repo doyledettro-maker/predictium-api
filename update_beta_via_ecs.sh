@@ -2,10 +2,16 @@
 # Run this via ECS Exec to update beta users to elite
 # Usage: aws ecs execute-command --cluster predictium-cluster --task <TASK_ARN> --container predictium-api --interactive --command "/bin/bash" --region us-east-2
 
-export PGHOST="predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com"
-export PGUSER="postgres"
-export PGDATABASE="predictium"
-export PGPASSWORD=":jpN:mz#ir48nl[Lewo|_4\$hi9C_"
+# Credentials must come from the environment — never commit them.
+# Set PGPASSWORD before running, e.g.:
+#   export PGPASSWORD="$(aws secretsmanager get-secret-value --secret-id predictium-db-password --query SecretString --output text)"
+export PGHOST="${PGHOST:-predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com}"
+export PGUSER="${PGUSER:-postgres}"
+export PGDATABASE="${PGDATABASE:-predictium}"
+if [ -z "$PGPASSWORD" ]; then
+  echo "ERROR: PGPASSWORD is not set. Refusing to run." >&2
+  exit 1
+fi
 
 psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" <<EOF
 UPDATE subscriptions

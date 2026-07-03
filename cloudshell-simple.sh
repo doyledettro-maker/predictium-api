@@ -1,7 +1,10 @@
-export PGHOST="predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com"
-export PGUSER="postgres"
-export PGDATABASE="predictium"
-export PGPASSWORD=":jpN:mz#ir48nl[Lewo|_4\$hi9C_"
+# Credentials must come from the environment — never commit them.
+# Set PGPASSWORD before running, e.g.:
+#   export PGPASSWORD="$(aws secretsmanager get-secret-value --secret-id predictium-db-password --query SecretString --output text)"
+export PGHOST="${PGHOST:-predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com}"
+export PGUSER="${PGUSER:-postgres}"
+export PGDATABASE="${PGDATABASE:-predictium}"
+if [ -z "$PGPASSWORD" ]; then echo "ERROR: PGPASSWORD is not set. Refusing to run." >&2; exit 1; fi
 if ! command -v psql &> /dev/null; then sudo yum install postgresql15 -y; fi
 echo "Updating subscriptions to elite..."
 psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "UPDATE subscriptions SET plan = 'elite', status = 'active' WHERE plan != 'elite' OR status != 'active';"

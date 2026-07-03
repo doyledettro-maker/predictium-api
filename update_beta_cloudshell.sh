@@ -14,7 +14,7 @@ export PGHOST="predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com"
 export PGUSER="postgres"
 export PGDATABASE="predictium"
 export PGPORT="5432"
-export PGPASSWORD=":jpN:mz#ir48nl[Lewo|_4\$hi9C_"
+if [ -z "$PGPASSWORD" ]; then echo "ERROR: PGPASSWORD is not set. Refusing to run." >&2; exit 1; fi
 
 # Install PostgreSQL client if not already installed
 if ! command -v psql &> /dev/null; then

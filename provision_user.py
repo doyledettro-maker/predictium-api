@@ -27,7 +27,11 @@ DB_HOST = "predictium-db.cdwgcgwm2ugb.us-east-2.rds.amazonaws.com"
 DB_PORT = 5432
 DB_NAME = "predictium"
 DB_USER = "postgres"
-DB_PASSWORD = ":jpN:mz#ir48nl[Lewo|_4$hi9C_"
+import os
+
+DB_PASSWORD = os.environ.get("DB_PASSWORD") or ""
+if not DB_PASSWORD:
+    raise SystemExit("ERROR: set DB_PASSWORD in the environment — credentials are never committed.")
 
 
 def generate_password(length=12):

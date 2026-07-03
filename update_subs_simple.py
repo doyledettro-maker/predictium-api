@@ -1,3 +1,4 @@
+import os
 import asyncio
 import asyncpg
 
@@ -7,7 +8,7 @@ async def main():
         port=5432,
         database='predictium',
         user='postgres',
-        password=':jpN:mz#ir48nl[Lewo|_4$hi9C_'
+        password=os.environ['DB_PASSWORD']
     )
     print("Connected!")
     result1 = await conn.execute("UPDATE subscriptions SET plan = 'elite', status = 'active' WHERE plan != 'elite' OR status != 'active'")
