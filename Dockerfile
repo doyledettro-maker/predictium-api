@@ -42,6 +42,7 @@ RUN pip install --no-cache /wheels/*
 
 # Copy application code
 COPY app/ ./app/
+RUN chmod -R a+rX /app/app
 
 # Change to non-root user
 USER appuser
