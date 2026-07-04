@@ -32,9 +32,15 @@ WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    wget \
     libpq5 \
     && rm -rf /var/lib/apt/lists/* \
     && adduser --system --group --no-create-home appuser
+
+RUN wget -O /app/rds-global-bundle.pem \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && chmod a+r /app/rds-global-bundle.pem
 
 # Copy wheels from builder and install
 COPY --from=builder /app/wheels /wheels
