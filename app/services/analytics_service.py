@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import boto3
+import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -367,12 +368,63 @@ def send_report_email(report: dict[str, Any]) -> bool:
     return True
 
 
+def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
+    """Slack incoming-webhook payload (mrkdwn) for the daily report."""
+    day, prev = report["day"], report["previous_day"]
+    last7, prev7 = report["last_7d"], report["prev_7d"]
+    mtd, ytd = report["mtd"], report["ytd"]
+
+    bots = ", ".join(f"{b['bot']} {b['hits']}" for b in report["bots"][:6]) or "none"
+    pages = "\n".join(
+        f"  {i + 1}. `{p['path']}` — {p['views']}"
+        for i, p in enumerate(report["top_pages"][:5])
+    ) or "  (no page views recorded)"
+    refs = "\n".join(
+        f"  {i + 1}. {r['referrer']} — {r['views']}"
+        for i, r in enumerate(report["top_referrers"][:5])
+    ) or "  (no external referrers)"
+
+    text_lines = [
+        f"*Predictium Traffic — {report['date']}* (US Eastern, bots excluded)",
+        f"Yesterday: *{day['pageviews']:,}* views · {day['visitors']:,} visitors · "
+        f"{day.get('signups', 0)} signups ({_pct_change(day['pageviews'], prev['pageviews'])} vs prior day)",
+        f"Last 7d: {last7['pageviews']:,} views ({_pct_change(last7['pageviews'], prev7['pageviews'])} vs prior 7d) · "
+        f"MTD {mtd['pageviews']:,} · YTD {ytd['pageviews']:,}",
+        f"AI/search crawler hits: {day.get('bot_hits', 0)} ({bots})",
+        f"*Top pages:*\n{pages}",
+        f"*Top referrers:*\n{refs}",
+        "<https://www.predictium.ai/admin/traffic|Full dashboard →>",
+    ]
+    return {"text": "\n".join(text_lines)}
+
+
+async def send_report_slack(report: dict[str, Any]) -> bool:
+    """Post the daily report to Slack via incoming webhook. True on success."""
+    settings = get_settings()
+    if not settings.slack_webhook_url:
+        logger.info("Daily report Slack post skipped: SLACK_WEBHOOK_URL not configured")
+        return False
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(settings.slack_webhook_url, json=render_report_slack(report))
+        resp.raise_for_status()
+    logger.info("Daily traffic report posted to Slack for %s", report["date"])
+    return True
+
+
 async def send_daily_report(db: AsyncSession, report_date: Optional[date] = None) -> dict[str, Any]:
-    """Build the report and email it (email failures logged, not raised)."""
+    """Build the report, then email it and post it to Slack.
+
+    Delivery failures are logged, never raised — each channel is independent.
+    """
     report = await build_daily_report(db, report_date)
     try:
         report["emailed"] = await asyncio.to_thread(send_report_email, report)
     except Exception:
         logger.exception("Failed to send daily traffic report email")
         report["emailed"] = False
+    try:
+        report["slacked"] = await send_report_slack(report)
+    except Exception:
+        logger.exception("Failed to post daily traffic report to Slack")
+        report["slacked"] = False
     return report
