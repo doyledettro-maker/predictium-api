@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
 
+    # Analytics (first-party traffic tracking)
+    analytics_ingest_key: str = ""  # shared secret; frontend server sends X-Analytics-Key
+    report_email_to: str = ""       # comma-separated recipients for the daily traffic report
+    report_email_from: str = ""     # SES-verified sender address
+    report_hour_utc: int = 11       # daily report send hour (11 UTC ≈ 6-7am US Eastern)
+    ses_region: str = ""            # defaults to aws_region when empty
+
     # CORS
     allowed_origins: str = "http://localhost:3000"
 
