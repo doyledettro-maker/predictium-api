@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     report_email_from: str = ""     # SES-verified sender address
     report_hour_utc: int = 11       # daily report send hour (11 UTC ≈ 6-7am US Eastern)
     ses_region: str = ""            # defaults to aws_region when empty
+    slack_webhook_url: str = ""     # Slack incoming webhook; posts the daily report to a channel
 
     # CORS
     allowed_origins: str = "http://localhost:3000"

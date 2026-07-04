@@ -40,9 +40,10 @@ async def daily_report_loop() -> None:
         logger.info("Daily report scheduler disabled: analytics not configured")
         return
     logger.info(
-        "Daily report scheduler started (send hour %02d:00 UTC, email %s)",
+        "Daily report scheduler started (send hour %02d:00 UTC, email %s, slack %s)",
         settings.report_hour_utc,
         "on" if settings.report_email_to else "off — set REPORT_EMAIL_TO/FROM",
+        "on" if settings.slack_webhook_url else "off — set SLACK_WEBHOOK_URL",
     )
     while True:
         try:
