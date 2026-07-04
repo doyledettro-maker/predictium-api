@@ -19,7 +19,6 @@ from app.config import get_settings
 from app.db.database import engine
 from app.models.page_view import PageView
 from app.routers import (
-    admin_router,
     analytics_router,
     auth_router,
     billing_router,
@@ -107,7 +106,6 @@ app.include_router(predictions_router)
 app.include_router(billing_router)
 app.include_router(webhooks_router)
 app.include_router(analytics_router)
-app.include_router(admin_router)  # TEMPORARY - Remove after updating beta users
 
 
 @app.get("/")
