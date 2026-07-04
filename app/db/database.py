@@ -4,6 +4,7 @@ Uses asyncpg driver for PostgreSQL.
 """
 
 from typing import AsyncGenerator
+from pathlib import Path
 import ssl
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -13,6 +14,7 @@ from sqlalchemy.orm import DeclarativeBase
 from app.config import get_settings
 
 settings = get_settings()
+RDS_CA_BUNDLE_PATH = Path("/app/rds-global-bundle.pem")
 
 
 def _engine_options(database_url: str) -> tuple[str, dict]:
@@ -32,9 +34,14 @@ def _engine_options(database_url: str) -> tuple[str, dict]:
     )
     remote_host = parsed.hostname not in {"localhost", "127.0.0.1", None}
     if wants_ssl or remote_host:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        if RDS_CA_BUNDLE_PATH.exists():
+            ssl_context = ssl.create_default_context(cafile=str(RDS_CA_BUNDLE_PATH))
+            ssl_context.check_hostname = True
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+        else:
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
         return clean_url, {"ssl": ssl_context}
     return clean_url, {}
 
