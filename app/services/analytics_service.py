@@ -208,6 +208,10 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
             db, "utm_source", "utm_source", *window_30,
             where_extra="AND NOT is_bot AND utm_source IS NOT NULL", limit=10,
         ),
+        "utm_campaigns": await _top_list(
+            db, "utm_campaign", "utm_campaign", *window_30,
+            where_extra="AND NOT is_bot AND utm_campaign IS NOT NULL", limit=15,
+        ),
         "devices": await _top_list(db, "COALESCE(device, 'unknown')", "device", *window_30, limit=5),
         "countries": await _top_list(
             db, "COALESCE(country, '??')", "country", *window_30, limit=10
