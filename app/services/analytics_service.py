@@ -264,6 +264,14 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
         "daily_series_14d": await _daily_series(db, report_date - timedelta(days=13), report_date),
         "top_pages": await _top_list(db, "path", "path", report_date, report_date, limit=10),
         "top_referrers": await _top_referrers(db, report_date, report_date, limit=10),
+        "countries": await _top_list(
+            db,
+            "COALESCE(NULLIF(country, ''), 'unknown')",
+            "country",
+            report_date,
+            report_date,
+            limit=10,
+        ),
         "bots": await _bot_hits(db, report_date, report_date, limit=10),
     }
 
@@ -307,6 +315,13 @@ def render_report_html(report: dict[str, Any]) -> str:
         for b in report["bots"]
     ) or "<tr><td style='padding:4px 12px' colspan='2'>No AI/search crawler hits</td></tr>"
 
+    countries = "".join(
+        f"<tr><td style='padding:4px 12px'>{c['country']}</td>"
+        f"<td style='padding:4px 12px;text-align:right'>{c['views']}</td>"
+        f"<td style='padding:4px 12px;text-align:right'>{c['visitors']}</td></tr>"
+        for c in report.get("countries", [])
+    ) or "<tr><td style='padding:4px 12px' colspan='3'>No country data recorded</td></tr>"
+
     th = "padding:6px 12px;text-align:left;border-bottom:1px solid #ddd"
     thr = "padding:6px 12px;text-align:right;border-bottom:1px solid #ddd"
 
@@ -334,6 +349,9 @@ def render_report_html(report: dict[str, Any]) -> str:
 
   <p style="margin:16px 0 4px"><b>Top referrers</b></p>
   <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">{refs}</table>
+
+  <p style="margin:16px 0 4px"><b>Top countries</b></p>
+  <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">{countries}</table>
 
   <p style="color:#999;font-size:12px;margin-top:20px">
     Full dashboard: <a href="https://www.predictium.ai/admin/traffic">predictium.ai/admin/traffic</a>
@@ -387,6 +405,10 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"  {i + 1}. {r['referrer']} — {r['views']}"
         for i, r in enumerate(report["top_referrers"][:5])
     ) or "  (no external referrers)"
+    countries = "\n".join(
+        f"  {i + 1}. {c['country']} — {c['views']} views · {c['visitors']} visitors"
+        for i, c in enumerate(report.get("countries", [])[:5])
+    ) or "  (no country data recorded)"
 
     text_lines = [
         f"*Predictium Traffic — {report['date']}* (US Eastern, bots excluded)",
@@ -397,6 +419,7 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"AI/search crawler hits: {day.get('bot_hits', 0)} ({bots})",
         f"*Top pages:*\n{pages}",
         f"*Top referrers:*\n{refs}",
+        f"*Top countries:*\n{countries}",
         "<https://www.predictium.ai/admin/traffic|Full dashboard →>",
     ]
     return {"text": "\n".join(text_lines)}
