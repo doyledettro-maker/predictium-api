@@ -283,6 +283,52 @@ def _pct_change(current: int, previous: int) -> str:
     return f"{sign}{(current - previous) / previous * 100:.0f}%"
 
 
+def _format_day_label(value: str) -> str:
+    return datetime.fromisoformat(value).strftime("%b %-d")
+
+
+def _render_html_views_chart(series: list[dict[str, Any]]) -> str:
+    max_views = max((int(d.get("pageviews") or 0) for d in series), default=0)
+    if max_views <= 0:
+        return "<p style='color:#666;margin:6px 0 0'>No page views recorded in the last 14 days.</p>"
+
+    rows = []
+    for point in series:
+        views = int(point.get("pageviews") or 0)
+        width = max(2, round((views / max_views) * 100)) if views else 0
+        label = _format_day_label(point["date"])
+        rows.append(
+            "<tr>"
+            f"<td style='padding:3px 8px 3px 0;white-space:nowrap;color:#555;font-size:12px'>{label}</td>"
+            "<td style='padding:3px 8px;width:100%'>"
+            f"<div style='background:#e6edf7;height:12px;width:{width}%;border-radius:2px'></div>"
+            "</td>"
+            f"<td style='padding:3px 0;text-align:right;font-size:12px'><b>{views:,}</b></td>"
+            "</tr>"
+        )
+    return (
+        "<table style='border-collapse:collapse;width:100%;margin-top:6px'>"
+        + "".join(rows)
+        + "</table>"
+    )
+
+
+def _render_slack_views_chart(series: list[dict[str, Any]]) -> str:
+    max_views = max((int(d.get("pageviews") or 0) for d in series), default=0)
+    if max_views <= 0:
+        return "  (no page views recorded in the last 14 days)"
+
+    rows = []
+    max_bar_width = 18
+    for point in series:
+        views = int(point.get("pageviews") or 0)
+        filled = max(1, round((views / max_views) * max_bar_width)) if views else 0
+        bar = "█" * filled
+        label = _format_day_label(point["date"])
+        rows.append(f"  `{label:>6}` {bar:<{max_bar_width}} {views:,}")
+    return "\n".join(rows)
+
+
 def render_report_html(report: dict[str, Any]) -> str:
     """Simple, email-client-safe HTML for the daily report."""
     day, prev = report["day"], report["previous_day"]
@@ -340,6 +386,9 @@ def render_report_html(report: dict[str, Any]) -> str:
     {row("Month to date", mtd['pageviews'], mtd['visitors'], mtd['signups'])}
     {row("Year to date", ytd['pageviews'], ytd['visitors'], ytd['signups'])}
   </table>
+
+  <p style="margin:16px 0 4px"><b>Views per day</b></p>
+  {_render_html_views_chart(report.get('daily_series_14d', []))}
 
   <p style="margin:16px 0 4px"><b>AI &amp; search crawler hits ({day.get('bot_hits', 0)} total)</b></p>
   <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">{bots}</table>
@@ -409,6 +458,7 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"  {i + 1}. {c['country']} — {c['views']} views · {c['visitors']} visitors"
         for i, c in enumerate(report.get("countries", [])[:5])
     ) or "  (no country data recorded)"
+    views_chart = _render_slack_views_chart(report.get("daily_series_14d", []))
 
     text_lines = [
         f"*Predictium Traffic — {report['date']}* (US Eastern, bots excluded)",
@@ -416,6 +466,7 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"{day.get('signups', 0)} signups ({_pct_change(day['pageviews'], prev['pageviews'])} vs prior day)",
         f"Last 7d: {last7['pageviews']:,} views ({_pct_change(last7['pageviews'], prev7['pageviews'])} vs prior 7d) · "
         f"MTD {mtd['pageviews']:,} · YTD {ytd['pageviews']:,}",
+        f"*Views per day:*\n{views_chart}",
         f"AI/search crawler hits: {day.get('bot_hits', 0)} ({bots})",
         f"*Top pages:*\n{pages}",
         f"*Top referrers:*\n{refs}",
