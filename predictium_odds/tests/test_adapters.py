@@ -228,3 +228,36 @@ def test_pinnacle_internal_only(monkeypatch):
     assert report.n_markets == 2
     assert all(q.redistributable is False for q in quotes)
     assert {q.line for q in quotes} == {-2.5}  # home-framed both sides
+
+
+FD_TEAM_FUTURES = {"pageProps": {"headerProps": {"team": {"teamFutures": [
+    {"marketType": "REGULAR_SEASON_WINS_SGP",
+     "description": "Buffalo Bills - Regular Season Wins 2026-27",
+     "text": "Buffalo Bills Over 10.5 Wins", "odds": "-125"},
+    {"marketType": "REGULAR_SEASON_WINS_SGP",
+     "description": "Buffalo Bills - Regular Season Wins 2026-27",
+     "text": "Buffalo Bills Under 10.5 Wins", "odds": "+105"},
+    # H2H variant must be skipped
+    {"marketType": "REGULAR_SEASON_WINS_SGP",
+     "description": "Miami Dolphins To Have More Regular Season Wins Than",
+     "text": "Buffalo Bills", "odds": "-300"},
+]}}}}
+
+
+def test_fanduel_team_page_win_totals(monkeypatch):
+    monkeypatch.setattr(fanduel, "discover_build_id", lambda sport, slug: "B1")
+    monkeypatch.setattr(fanduel, "get_json",
+                        lambda url, **kw: FD_TEAM_FUTURES)
+    quotes, report = fanduel.fetch_win_totals(CFG, {"BUF": "buffalo-bills"})
+    assert report.ok and report.n_markets == 2
+    over = next(q for q in quotes if q.side == "over")
+    assert (over.event_key, over.line, over.price_american) == \
+        ("BUF", 10.5, -125)
+    assert over.source_ids["build_id"] == "B1"
+
+
+def test_fanduel_team_page_no_build_id_reports(monkeypatch):
+    monkeypatch.setattr(fanduel, "discover_build_id", lambda s, g: None)
+    quotes, report = fanduel.fetch_win_totals(CFG, {"BUF": "buffalo-bills"})
+    assert quotes == [] and not report.ok
+    assert "build-id" in report.note

@@ -29,6 +29,17 @@ Doyle's residential egress would likely behave differently._
    in `*_dollars` string fields. Any older Kalshi code (incl. whatever writes
    `kalshi/latest.json`) that reads the integer fields is silently getting
    nulls — worth telling whoever owns the Mac Mini publisher.
+   _Resolved 2026-07-23 (Claudia's local audit):_ the publisher is
+   `~/source/predictium/40pfrom3/model/scripts/fetch_kalshi_odds.py`, run by
+   LaunchAgent `com.predictium.kalshi-odds` every 5 min — currently
+   unloaded (NBA offseason), legacy-price bug confirmed (reads `yes_bid`/
+   `yes_ask`/`no_bid`/`no_ask`/`last_price`, never `*_dollars`; would
+   TypeError on today's API). Key-free archive committed to
+   `nba_prediction_model_2026` as `scripts/fetch_kalshi_odds_legacy.py`
+   (branch `claude/nba-offseason-coverage-7zlg43`; full report
+   `docs/odds-layer-maintenance-2026-07-23.md` there). Plan: do NOT patch
+   the legacy script — replace it with a shared-layer publisher during the
+   NBA migration, before the season starts.
 
 ## 1. Coverage matrix
 
@@ -40,7 +51,7 @@ Legend: ✅ verified live this session · ◐ works with caveats · ✗ blocked/
 | Source | Access | Auth | GL | PP | FUT | LIVE | Geo/rate | ToS posture | Reliability |
 |---|---|---|---|---|---|---|---|---|---|
 | **Bovada** | public JSON `bovada.lv/services/sports/event/v2/…` | none | ✅ NFL/MLB/WNBA/CFB/tennis | ✅ | ✅ (NFL team wins verified 32/32 w/ juice; tennis outrights; CFB conf wins listed) | ✗ (we skip `is_live`) | none seen; no key | Gray (undocumented but keyless, no login; 5 repos in prod for months) | High; occasional path renames |
-| **FanDuel** | `sbapi.{state}.sportsbook.fanduel.com` + public `_ak` | none | ✅ | ✅ | ◐ **volatile** — win totals left the NFL lobby entirely (the July break; not at any probed customPageId/event/coupon endpoint from this egress) | ✗ | per-state host (NJ everywhere except MLB=MI — should be unified); geo-sensitive | Gray (public web key, undocumented) | Medium — **restructures lobbies silently**; this mission exists because of it |
+| **FanDuel** | `sbapi.{state}.sportsbook.fanduel.com` + public `_ak`; futures on per-team website Next.js data routes (`/teams/_next/data/{buildId}/{sport}/{slug}/odds.json`, build id discovered per run — Claudia devtools capture 2026-07-23) | none | ✅ | ✅ | ✅ restored via team-page route (win-total ladders under `pageProps.headerProps.team.teamFutures`) | ✗ | per-state host (NJ everywhere except MLB=MI — should be unified); geo-sensitive | Gray (public web key, undocumented) | Medium — **restructures lobbies silently**; this mission exists because of it |
 | **Kalshi** | `api.elections.kalshi.com/trade-api/v2` | **none for market data** | ✅ (`KX{NFL,NBA,WNBA,NCAAF}GAME`, `KXATPMATCH`…) | ◐ (season stat ladders, some game TD/player series) | ✅ (`KXNFLWINS` verified; `KXMLBWINS-*`, `KXNCAAFWINS`, division/champ series) | ✅ (quarters/halves series exist) | documented rate limits; no geo issue | **Cleanest of all: CFTC-regulated, documented public API** | High |
 
 Kalshi series depth by our sports (from the live series dump): NFL 236,
@@ -56,9 +67,9 @@ price comparison** (now codified in `select_aligned_contract`, fail-loud).
 |---|---|---|---|---|---|---|
 | **ESPN core API (DraftKings lines)** | ✅ 200 keyless — `sports.core.api.espn.com/v2/...events/{id}/competitions/{id}/odds` returns provider **DraftKings** with open/current spread/total/ML + `propBets` ref | ✅ all US sports | ◐ | ◐ | Unofficial but public, keyless, stable for years, universally used | **Adopt** — gets DK numbers without touching DK's bot walls; also the MLB ROADMAP's requested 3rd source |
 | **Pinnacle guest API** | ✅ 200 — `guest.api.arcadia.pinnacle.com/0.1/…` with the public web `x-api-key`; NFL matchups verified | ✅ | ◐ | ✅ | **Gray-to-hostile**: Pinnacle ToS prohibits automated access; US-blocked book (we'd read, not bet) | **FLAG for Doyle** — sharpest consensus anchor in existence; ToS call is a human decision |
-| **DraftKings direct** | ✗ 403 (Akamai) | — | — | — | Gray | Skip; DK via ESPN instead. Possible from Mac Mini egress if ever needed |
-| **BetMGM** | ✗ 403 (bot wall) | — | — | — | Gray | Skip from cloud; Mac Mini possible, low value vs cost |
-| **Caesars** | ✗ 403 (Akamai) | — | — | — | Gray | Skip |
+| **DraftKings direct** | ✗ 403 from cloud AND residential (Claudia, Mac Mini, 2026-07-23) | — | — | — | Gray | Closed everywhere probed — ESPN route is THE DK route |
+| **BetMGM** | ✗ 403 from cloud AND residential | — | — | — | Gray | Skip |
+| **Caesars** | ✗ 403 from cloud AND residential | — | — | — | Gray | Skip |
 | **bet365** | not probed — known aggressive anti-bot + explicitly ToS-hostile | — | — | — | Hostile | **Do not pursue** |
 | **Fanatics / PointsBet** | PointsBet US no longer exists (Fanatics acquisition); Fanatics has no known public JSON | — | — | — | Unknown | Deprioritize |
 | The Odds API | — | — | — | — | **ORG-BANNED** | Never |
