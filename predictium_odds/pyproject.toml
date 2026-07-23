@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "predictium-odds"
+version = "0.1.0"
+description = "Predictium shared multi-book odds ingestion: normalized schema, book/exchange adapters, odds math, line utilities, source-health monitoring"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["predictium_odds*"]

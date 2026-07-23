@@ -147,5 +147,22 @@ change can't break six pipelines at once.
   (Bovada board + Kalshi KXNFLWINS with strict main-line alignment; FanDuel
   parse kept for auto-recovery; per-source health line + loud warnings).
   `nfl_prediction_model_2026` branch `claude/predictium-multi-book-odds-zdirww`.
-- ⏸ Broad build (shared package, new adapters, monitoring, rollout) is
-  **paused for the architecture sign-off above**, per mission instructions.
+- ✅ **Architecture approved by Doyle 2026-07-23**: shared package. Pinnacle
+  approved (internal-only; see `predictium_odds/books/pinnacle.py` for the
+  honest ToS framing and the `redistributable=False` containment). Priority
+  order confirmed: Kalshi everywhere → ESPN/DK (+ NBA off the banned
+  aggregator) → health monitoring → rollout.
+- ✅ **`predictium_odds/` package shipped** (this repo, pip-installable
+  subdirectory — the seed of the potential standalone odds-service product):
+  schema, oddsmath (Shin/power ports), lines (best/consensus/align),
+  health, and five adapters (bovada, fanduel, kalshi, espn_dk, pinnacle),
+  all verified live 2026-07-23; 20 fixture tests. See its README for the
+  per-repo rollout pattern (flag + fallback + parity check).
+- ⏭ Next: wire NFL repo's win-total path onto the shared layer (its
+  in-repo implementation is the donor), then NBA migration (removes The
+  Odds API), then per-repo rollout with `CoverageSpec`s and CI alerting.
+- ⚠ Revenue-service note: redistributing scraped book prices commercially
+  is a materially different ToS/legal posture than internal modeling use —
+  needs a real legal read before any productization. Kalshi (regulated,
+  documented) and de-vigged *derived* consensus values are the defensible
+  core of such a product; raw Bovada/FanDuel/Pinnacle passthrough is not.
