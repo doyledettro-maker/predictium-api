@@ -169,9 +169,24 @@ change can't break six pipelines at once.
   health, and five adapters (bovada, fanduel, kalshi, espn_dk, pinnacle),
   all verified live 2026-07-23; 20 fixture tests. See its README for the
   per-repo rollout pattern (flag + fallback + parity check).
-- ⏭ Next: wire NFL repo's win-total path onto the shared layer (its
-  in-repo implementation is the donor), then NBA migration (removes The
-  Odds API), then per-repo rollout with `CoverageSpec`s and CI alerting.
+- ✅ **NBA migrated off The Odds API (2026-07-24)** — new direct-book
+  fetcher (Bovada + FanDuel + DK-via-ESPN, same CSV contract, consensus
+  row) + shared-layer Kalshi publisher replacing the legacy Mac Mini
+  script; the banned aggregator is deleted from the org.
+- ✅ **Book-health monitoring rolled out to all six model repos
+  (2026-07-24)** — per-source CoverageSpec evaluation via the shared
+  health module (soft import; `predictium-odds` pinned by SHA in each
+  repo's deps): NBA (in the new fetcher, `--require-lines` exit 2), WNBA
+  (`capture_lines.py`, keeps its in-season exit 2), MLB (`run_scrape.py`,
+  scraped-not-inserted counts, all-books-down exit 2), tennis
+  (`books.fetch_tennis_lines`, year-round warning-only), NFL + CFB
+  (`books.fetch_game_lines`, listing-window-gated warning-only). First
+  live WNBA run immediately flagged a real gap (Bovada zero team games in
+  the All-Star window while FanDuel carried 7). Silent single-source
+  failure is now impossible in every pipeline.
+- ⏭ Next: swap the per-repo fetchers themselves onto the shared adapters
+  (flag + parity check per the README), and re-point the SHA pin to a
+  real tag once the branch merges (tag pushes are blocked from sessions).
 - ⚠ Revenue-service note: redistributing scraped book prices commercially
   is a materially different ToS/legal posture than internal modeling use —
   needs a real legal read before any productization. Kalshi (regulated,
