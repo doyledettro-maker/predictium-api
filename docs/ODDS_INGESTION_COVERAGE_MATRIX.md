@@ -74,6 +74,21 @@ price comparison** (now codified in `select_aligned_contract`, fail-loud).
 | **Fanatics / PointsBet** | PointsBet US no longer exists (Fanatics acquisition); Fanatics has no known public JSON | — | — | — | Unknown | Deprioritize |
 | The Odds API | — | — | — | — | **ORG-BANNED** | Never |
 
+### Follow-up candidates triaged (2026-07-25, Doyle's ask)
+
+- **Circa**: no keyless path — sportsbook is geo-gated native apps only;
+  their sharp board is available via LICENSED odds-screen vendors
+  (SpankOdds et al., linked from Circa's own site). A paid-data business
+  decision, not an engineering one; ToS-clean by construction if signed.
+- **Betfair Exchange**: the one genuinely interesting international name —
+  Kalshi-like but with deep tennis/soccer liquidity. Real documented API,
+  but account + key + non-US geo: a deliberate business/jurisdiction
+  decision, not a scrape.
+- **BetOnline**: 403 bot-wall (probed). Sharp offshores (Bookmaker,
+  Heritage): login-walled, murkier ToS than Bovada — skip. Soft offshores
+  (MyBookie, BetUS): market-followers, zero signal for real exposure —
+  never. 1xBet/crypto books: regulatory nightmares — never.
+
 ### Priority recommendation
 
 1. **Kalshi everywhere** (keyless, documented, regulated; every sport covered)
