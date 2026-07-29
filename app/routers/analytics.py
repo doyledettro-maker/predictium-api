@@ -65,6 +65,12 @@ class IngestRequest(BaseModel):
     events: list[PageViewEvent] = Field(..., min_length=1, max_length=MAX_BATCH)
 
 
+class TwitterFollowerSnapshotRequest(BaseModel):
+    followers: int = Field(..., ge=0)
+    account: str = Field(default="PredictiumAI", min_length=1, max_length=32)
+    source: Optional[str] = Field(default="predictium-x-daily-engagement", max_length=64)
+
+
 @router.post("/pageviews", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_pageviews(
     body: IngestRequest,
@@ -92,6 +98,21 @@ async def ingest_pageviews(
     ]
     await db.execute(insert(PageView), rows)
     return {"accepted": len(rows)}
+
+
+@router.post("/twitter/followers", status_code=status.HTTP_202_ACCEPTED)
+async def ingest_twitter_followers(
+    body: TwitterFollowerSnapshotRequest,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_analytics_key),
+):
+    snapshot = await analytics_service.record_twitter_followers(
+        db,
+        followers=body.followers,
+        account=body.account,
+        source=body.source or "predictium-x-daily-engagement",
+    )
+    return {"accepted": 1, "snapshot": snapshot}
 
 
 @router.get("/stats")

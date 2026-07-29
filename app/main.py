@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.db.database import engine
 from app.models.page_view import PageView
+from app.models.twitter_follower_snapshot import TwitterFollowerSnapshot
 from app.routers import (
     analytics_router,
     auth_router,
@@ -62,7 +63,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
             async with engine.begin() as conn:
                 await conn.run_sync(
-                    PageView.metadata.create_all, tables=[PageView.__table__]
+                    PageView.metadata.create_all,
+                    tables=[PageView.__table__, TwitterFollowerSnapshot.__table__],
                 )
             report_task = asyncio.create_task(daily_report_loop())
         except Exception:

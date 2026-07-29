@@ -162,6 +162,99 @@ async def _daily_series(db: AsyncSession, start: date, end: date) -> list[dict[s
     return series
 
 
+async def record_twitter_followers(
+    db: AsyncSession,
+    followers: int,
+    account: str = "PredictiumAI",
+    source: str = "predictium-x-daily-engagement",
+) -> dict[str, Any]:
+    q = text(
+        """
+        INSERT INTO twitter_follower_snapshots (account, followers, source)
+        VALUES (:account, :followers, :source)
+        RETURNING id, observed_at, account, followers, source
+        """
+    )
+    row = (
+        await db.execute(
+            q,
+            {
+                "account": account.lstrip("@"),
+                "followers": followers,
+                "source": source[:64] if source else None,
+            },
+        )
+    ).one()
+    return {
+        "id": int(row.id),
+        "observed_at": row.observed_at.isoformat(),
+        "account": row.account,
+        "followers": int(row.followers),
+        "source": row.source,
+    }
+
+
+async def _twitter_follower_series(
+    db: AsyncSession, start: date, end: date, account: str = "PredictiumAI"
+) -> list[dict[str, Any]]:
+    """Latest follower snapshot per local date in [start, end], with gaps filled."""
+    q = text(
+        f"""
+        SELECT DISTINCT ON ({_local_date_expr('observed_at')})
+               {_local_date_expr('observed_at')} AS day,
+               observed_at,
+               followers
+        FROM twitter_follower_snapshots
+        WHERE account = :account
+          AND {_local_date_expr('observed_at')} BETWEEN :start AND :end
+        ORDER BY {_local_date_expr('observed_at')}, observed_at DESC
+        """
+    )
+    rows = (
+        await db.execute(q, {"tz": TZ, "account": account.lstrip("@"), "start": start, "end": end})
+    ).all()
+    by_day = {
+        r.day: {
+            "followers": int(r.followers),
+            "observed_at": r.observed_at.isoformat(),
+        }
+        for r in rows
+    }
+    series = []
+    last_known: dict[str, Any] | None = None
+    d = start
+    while d <= end:
+        if d in by_day:
+            last_known = by_day[d]
+            series.append({"date": d.isoformat(), **by_day[d], "filled": False})
+        elif last_known:
+            series.append({"date": d.isoformat(), **last_known, "filled": True})
+        else:
+            series.append({"date": d.isoformat(), "followers": None, "filled": True})
+        d += timedelta(days=1)
+    return series
+
+
+async def _twitter_follower_summary(
+    db: AsyncSession, today: date, account: str = "PredictiumAI"
+) -> dict[str, Any]:
+    series = await _twitter_follower_series(db, today - timedelta(days=89), today, account)
+    points = [p for p in series if p.get("followers") is not None]
+    current = points[-1] if points else None
+    previous = points[-2] if len(points) > 1 else None
+    return {
+        "account": account.lstrip("@"),
+        "current": current,
+        "previous": previous,
+        "delta": (
+            int(current["followers"]) - int(previous["followers"])
+            if current and previous
+            else None
+        ),
+        "series": series,
+    }
+
+
 def _now_local_date() -> date:
     # Eastern is UTC-4/-5; subtracting 5h from UTC is wrong half the year,
     # so use zoneinfo for the app-side "today" anchor.
@@ -201,6 +294,7 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
         "timezone": TZ,
         "summary": summary,
         "signups": signups,
+        "twitter_followers": await _twitter_follower_summary(db, today),
         "daily_series": await _daily_series(db, today - timedelta(days=89), today),
         "top_pages": await _top_list(db, "path", "path", *window_30),
         "top_referrers": await _top_referrers(db, *window_30),
@@ -262,6 +356,9 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
         "mtd": mtd,
         "ytd": ytd,
         "daily_series_14d": await _daily_series(db, report_date - timedelta(days=13), report_date),
+        "twitter_followers_14d": await _twitter_follower_series(
+            db, report_date - timedelta(days=13), report_date
+        ),
         "top_pages": await _top_list(db, "path", "path", report_date, report_date, limit=10),
         "top_referrers": await _top_referrers(db, report_date, report_date, limit=10),
         "countries": await _top_list(
@@ -329,6 +426,69 @@ def _render_slack_views_chart(series: list[dict[str, Any]]) -> str:
     return "\n".join(rows)
 
 
+def _render_html_follower_chart(series: list[dict[str, Any]]) -> str:
+    points = [p for p in series if p.get("followers") is not None]
+    if not points:
+        return "<p style='color:#666;margin:6px 0 0'>No X follower snapshots recorded yet.</p>"
+
+    min_followers = min(int(p["followers"]) for p in points)
+    max_followers = max(int(p["followers"]) for p in points)
+    spread = max(1, max_followers - min_followers)
+
+    rows = []
+    for point in series:
+        label = _format_day_label(point["date"])
+        followers = point.get("followers")
+        if followers is None:
+            rows.append(
+                "<tr>"
+                f"<td style='padding:3px 8px 3px 0;white-space:nowrap;color:#555;font-size:12px'>{label}</td>"
+                "<td style='padding:3px 8px;width:100%;color:#999;font-size:12px'>No snapshot</td>"
+                "<td style='padding:3px 0;text-align:right;font-size:12px'>-</td>"
+                "</tr>"
+            )
+            continue
+        value = int(followers)
+        width = max(2, round(((value - min_followers) / spread) * 100)) if spread else 100
+        rows.append(
+            "<tr>"
+            f"<td style='padding:3px 8px 3px 0;white-space:nowrap;color:#555;font-size:12px'>{label}</td>"
+            "<td style='padding:3px 8px;width:100%'>"
+            f"<div style='background:#e3f4ee;height:12px;width:{width}%;border-radius:2px'></div>"
+            "</td>"
+            f"<td style='padding:3px 0;text-align:right;font-size:12px'><b>{value:,}</b></td>"
+            "</tr>"
+        )
+    return (
+        "<table style='border-collapse:collapse;width:100%;margin-top:6px'>"
+        + "".join(rows)
+        + "</table>"
+    )
+
+
+def _render_slack_follower_chart(series: list[dict[str, Any]]) -> str:
+    points = [p for p in series if p.get("followers") is not None]
+    if not points:
+        return "  (no X follower snapshots recorded yet)"
+
+    min_followers = min(int(p["followers"]) for p in points)
+    max_followers = max(int(p["followers"]) for p in points)
+    spread = max(1, max_followers - min_followers)
+    max_bar_width = 18
+    rows = []
+    for point in series:
+        label = _format_day_label(point["date"])
+        followers = point.get("followers")
+        if followers is None:
+            rows.append(f"  `{label:>6}` {'':<{max_bar_width}} -")
+            continue
+        value = int(followers)
+        filled = max(1, round(((value - min_followers) / spread) * max_bar_width))
+        bar = "█" * filled
+        rows.append(f"  `{label:>6}` {bar:<{max_bar_width}} {value:,}")
+    return "\n".join(rows)
+
+
 def render_report_html(report: dict[str, Any]) -> str:
     """Simple, email-client-safe HTML for the daily report."""
     day, prev = report["day"], report["previous_day"]
@@ -389,6 +549,9 @@ def render_report_html(report: dict[str, Any]) -> str:
 
   <p style="margin:16px 0 4px"><b>Views per day</b></p>
   {_render_html_views_chart(report.get('daily_series_14d', []))}
+
+  <p style="margin:16px 0 4px"><b>@PredictiumAI followers</b></p>
+  {_render_html_follower_chart(report.get('twitter_followers_14d', []))}
 
   <p style="margin:16px 0 4px"><b>AI &amp; search crawler hits ({day.get('bot_hits', 0)} total)</b></p>
   <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">{bots}</table>
@@ -459,6 +622,14 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         for i, c in enumerate(report.get("countries", [])[:5])
     ) or "  (no country data recorded)"
     views_chart = _render_slack_views_chart(report.get("daily_series_14d", []))
+    follower_chart = _render_slack_follower_chart(report.get("twitter_followers_14d", []))
+    follower_points = [p for p in report.get("twitter_followers_14d", []) if p.get("followers") is not None]
+    follower_line = "X followers: no snapshots yet"
+    if follower_points:
+        current_followers = int(follower_points[-1]["followers"])
+        previous_followers = int(follower_points[-2]["followers"]) if len(follower_points) > 1 else current_followers
+        delta = current_followers - previous_followers
+        follower_line = f"X followers: *{current_followers:,}* ({delta:+,} vs prior snapshot)"
 
     text_lines = [
         f"*Predictium Traffic — {report['date']}* (US Eastern, bots excluded)",
@@ -467,6 +638,8 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"Last 7d: {last7['pageviews']:,} views ({_pct_change(last7['pageviews'], prev7['pageviews'])} vs prior 7d) · "
         f"MTD {mtd['pageviews']:,} · YTD {ytd['pageviews']:,}",
         f"*Views per day:*\n{views_chart}",
+        follower_line,
+        f"*@PredictiumAI followers:*\n{follower_chart}",
         f"AI/search crawler hits: {day.get('bot_hits', 0)} ({bots})",
         f"*Top pages:*\n{pages}",
         f"*Top referrers:*\n{refs}",
