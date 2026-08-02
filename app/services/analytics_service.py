@@ -131,6 +131,45 @@ async def _bot_hits(
     return [{"bot": r.bot, "hits": int(r.hits)} for r in rows]
 
 
+async def _direct_one_page_visitors(db: AsyncSession, start: date, end: date) -> dict[str, int]:
+    """Visitors with exactly one unattributed, unauthenticated page view.
+
+    This is not automatically excluded from human totals, but it is useful
+    for spotting crawler-like bursts that slip past user-agent bot detection.
+    """
+    q = text(
+        f"""
+        WITH visitor_rollup AS (
+            SELECT visitor_id,
+                   COUNT(*) AS views,
+                   COUNT(DISTINCT path) AS paths,
+                   BOOL_OR(referrer IS NOT NULL AND referrer <> '') AS has_referrer,
+                   BOOL_OR(
+                       utm_source IS NOT NULL
+                       OR utm_medium IS NOT NULL
+                       OR utm_campaign IS NOT NULL
+                   ) AS has_utm,
+                   BOOL_OR(user_id IS NOT NULL) AS has_user
+            FROM page_views
+            WHERE {_local_date_expr()} BETWEEN :start AND :end
+              AND NOT is_bot
+              AND visitor_id IS NOT NULL
+            GROUP BY visitor_id
+        )
+        SELECT COUNT(*) AS visitors,
+               COALESCE(SUM(views), 0) AS pageviews
+        FROM visitor_rollup
+        WHERE views = 1
+          AND paths = 1
+          AND NOT has_referrer
+          AND NOT has_utm
+          AND NOT has_user
+        """
+    )
+    row = (await db.execute(q, {"tz": TZ, "start": start, "end": end})).one()
+    return {"pageviews": int(row.pageviews or 0), "visitors": int(row.visitors or 0)}
+
+
 async def _daily_series(db: AsyncSession, start: date, end: date) -> list[dict[str, Any]]:
     q = text(
         f"""
@@ -315,6 +354,10 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
             "today": await _bot_hits(db, today, today),
             "last_30d": await _bot_hits(db, *window_30),
         },
+        "anomaly_signals": {
+            "today": await _direct_one_page_visitors(db, today, today),
+            "last_30d": await _direct_one_page_visitors(db, *window_30),
+        },
     }
 
 
@@ -332,6 +375,7 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
     day = await _count_range(db, report_date, report_date)
     day["bot_hits"] = sum(b["hits"] for b in await _bot_hits(db, report_date, report_date))
     day["signups"] = await _signup_count(db, report_date, report_date)
+    day["direct_one_page"] = await _direct_one_page_visitors(db, report_date, report_date)
 
     prev = await _count_range(db, prev_day, prev_day)
 
@@ -370,6 +414,9 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
             limit=10,
         ),
         "bots": await _bot_hits(db, report_date, report_date, limit=10),
+        "anomaly_signals": {
+            "direct_one_page": day["direct_one_page"],
+        },
     }
 
 
