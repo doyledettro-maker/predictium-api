@@ -198,14 +198,40 @@ In-season all-sources-down exits non-zero in NBA/WNBA/MLB.
 - **MLB** — pitcher outs + earned runs from Bovada, multi-line FanDuel O/U
   parse, Kalshi `KXMLBOUTS`/`KXMLBKS` ladders as a third prop source.
 - **WNBA / CFB** — health monitoring; adapters unchanged.
+- **Soccer** — shipped 2026-08-02 (spec `0005b-market-clients`, branch
+  `claude/books-odds-session-8rndry`). Keyless Bovada + FanDuel +
+  Polymarket clients feeding ONE quote frame:
+  `soccer_model/data/books/frame.py::collect_quotes(fixtures, *,
+  from_cache=False)` -> a pinned 11-column per-book DataFrame, with a
+  schema-pin test as the executable contract with spec 0005c. Shin de-vig
+  via the repo's own 0002b machinery; exchange mids renormalized, never
+  de-vigged; best price is a DERIVED view (`frame.best_prices()`), so
+  per-book rows are never pre-merged. Live at ship: 2,661 quotes / 48
+  matches / 5 leagues (bovada 1,849, fanduel 812, polymarket 0 — it lists
+  no 2026-27 match-winner market yet).
+  Three things worth carrying to the next sport: pre-game gating was
+  entirely absent until this spec (both books now gate on their own flags
+  — Bovada `event.live`, FanDuel `inPlay`/`marketStatus`); sportsbook rows
+  carried no kickoff, so the +/-6h fixture window could only be applied to
+  Polymarket; and Bovada's team totals were sitting unparsed in a payload
+  we were already fetching (the MLB pitcher-props lesson, again). One
+  defect: FanDuel hardcoded `main: True` on every AH rung, so 46/48 live
+  matches carried two contradictory "main" lines — it publishes one
+  marketType per handicap, so `HOME_TEAM_-1.5` and `AWAY_TEAM_-1.5` land
+  on opposite sides. `fanduel.flag_main_ah()` now picks closest-to-balanced.
+  **This session formally owns `soccer_model/data/books/**`** (clients,
+  quote frame, book identity columns) per that repo's
+  `handoffs/multi_session_workflow.md`; other sessions treat the package
+  as read-only and frame friction is a joint questions-file event.
 
 **Blocked / pending:**
 
 - Mac Mini prod checkouts must `git pull` for tennis + MLB changes to reach
   the live tape (Claudia's task list).
 - `odds-v0.1.0` tag unminted (see §2).
-- Soccer Books/Odds work hasn't started — the session couldn't get repo
-  access (§8).
+- Soccer: quote frame shipped and all rulings ratified; the Coder is
+  merging that branch under spec 0005c rev 2. Kalshi soccer is a GATED
+  backlog item owned by this role (§7.3).
 
 ---
 
@@ -245,12 +271,34 @@ In rough priority order:
    Suggested order: WNBA (smallest surface) → CFB → MLB → tennis → NFL.
 2. **Pinnacle into the internal fair-value anchor** — it's the sharpest
    consensus reference available and currently unused. Internal only.
-3. **Kalshi spread/total for tennis** — the series exist
+3. **Kalshi soccer (UCL) — GATED, owned by this role, contract questions
+   already answered.** Do NOT start before both triggers fire: spec 0005c
+   stable AND UCL slates publishing. A spec will be issued then. The
+   Planner's 2026-08-02 ruling settled everything that used to block it:
+   (a) "the exchange's 1X2" = the three binary mids renormalized to sum
+   to 1 — identical to the Polymarket treatment, and now the ONE rule for
+   all exchanges (renormalized, never de-vigged, never in best price,
+   shown under `market.books.{exchange}` with exchange styling);
+   (b) settlement aligns by construction — the published soccer 1X2 IS
+   the regulation-time (90' + stoppage) result, so `KX*GAME` matches;
+   record that in the adapter docstring, and note "to advance" is a
+   different market, out of scope; (c) `KXUCLSPREAD` is a strike ladder,
+   so the org's absolute alignment rule applies verbatim — consensus main
+   line first, fail loud on no equivalent rung, never nearest-strike;
+   (d) gate on bid-ask width before quoting.
+   Coverage evidence (live probe 2026-08-02, preserve for the spec):
+   `KXUCLGAME` 30/30 two-sided across 10 fixtures (median spread 1c),
+   `KXUCLTOTAL` 60/60 (1c), `KXUCLSPREAD` 34/40 inside 10c (six
+   quote-shells, one at 2c/78c), `KXUCLBTTS` 10/10 (2c). All five
+   domestic series (`KXEPLGAME`, `KXLALIGAGAME`, `KXBUNDESLIGAGAME`,
+   `KXSERIEAGAME`, `KXLIGUE1GAME`) list ZERO open markets in preseason —
+   re-probe when the leagues start rather than assuming they stay empty.
+4. **Kalshi spread/total for tennis** — the series exist
    (`KXATPGAMESPREAD`, `KXATPGAMETOTAL`) but list zero markets. When they
    open, the alignment machinery is already in place.
-4. **NBA season-start checklist** (~late Oct) — load the staged plist, delete
+5. **NBA season-start checklist** (~late Oct) — load the staged plist, delete
    the legacy agent, eyeball the first slate.
-5. **New sources** are a research-then-propose task, not a build task. The
+6. **New sources** are a research-then-propose task, not a build task. The
    matrix has the current triage: DK/BetMGM/Caesars are bot-walled everywhere
    probed; Circa is licensed-vendor-only; **Betfair Exchange** is the one
    genuinely interesting unexplored candidate (documented API, deep
@@ -260,38 +308,54 @@ In rough priority order:
 
 ## 8. If you're the SOCCER Books/Odds session
 
-The task is `specs/0005b-market-clients.md` in
-`soccer_prediction_model_2026`, branched from
-`origin/claude/spec-0005-publisher-core`, with ambiguities routed to
-`handoffs/reports/0005b-questions.md`. Read that repo's `CLAUDE.md`,
-`ROADMAP.md`, and `handoffs/multi_session_workflow.md` first — they bind you.
+**This section used to be a "how to get started / you may not have repo
+access" brief. That is all resolved — the repo is in scope, the work
+shipped 2026-08-02, and every open question was ratified.** What follows
+is what you actually need to know now.
 
-**Known blocker:** the repo may not be in your session's scope. `add_repo`
-and `list_repos` returned `MCP error -32003: MCP tool call requires approval`,
-and a settings.json allowlist did **not** clear it (the gate is server-side,
-not Claude Code's permission layer). The durable fix is to add the repo to the
-**environment's sources** in the Claude Code web UI so every new session has
-it, then start fresh. Don't burn time on `add_repo`.
+**You own `soccer_model/data/books/**`** — clients, quote frame, book
+identity columns — per that repo's `handoffs/multi_session_workflow.md`.
+Other sessions treat the package as read-only. Read the repo's
+`CLAUDE.md`, `ROADMAP.md`, and that workflow doc before touching
+anything; they assign roles and branches and they bind you.
 
-**Research already done for you — Kalshi soccer coverage** (live probe
-2026-07-25, evidence for the questions file, *not* an implementation):
+**The seam you defend.** `frame.collect_quotes()` returns a pinned
+11-column, strictly per-book frame; spec 0005c consumes it verbatim.
+`tests/test_quote_frame.py::test_schema_pin` is the executable contract.
+A schema change is a JOINT questions-file event with 0005c's owner — not
+a unilateral edit, in either direction. The ratified division (Q9): the
+frame stays per-book pure, `frame.best_prices()` is the ONE best-price
+computation, and 0005c retires `publish/market.py`'s duplicate
+best-price/de-vig selection in favour of frame outputs. One de-vig path,
+one best-price path — or they drift.
 
-- 285 soccer series exist: EPL, UCL, Bundesliga 1/2, La Liga, Serie A,
-  Ligue 1, MLS, CONMEBOL Libertadores/Sudamericana, plus derivatives.
-- With domestic leagues in preseason, UCL qualifying was trading:
-  `KXUCLGAME` 30/30 liquid across 10 fixtures, `KXUCLTOTAL` 60/60,
-  `KXUCLSPREAD` 34/40, `KXUCLBTTS` 10/10. Example
-  (`KXUCLGAME-26AUG05FENSTU`): Fenerbahce 68/70¢, Tie 18/20¢, Sturm Graz
-  11/12¢.
-- **The structural issue to raise before writing any adapter:** soccer's core
-  market is **three-way (1X2 with a draw)**, and Kalshi models it as three
-  binary contracts per event. A quote frame shaped around two-sided markets
-  (the tennis/NFL moneyline pattern) cannot represent it. That is a
-  contract-level question for the owning sessions, not something to resolve
-  alone.
-- Settlement semantics: Kalshi resolves on **90 minutes + stoppage,
-  excluding extra time**. For knockout ties, "to advance" is a separate
-  series. Books price 90-minute 1X2 by default, so they align — but don't
-  assume it.
-- Event tickers encode fixture date + both club codes, so the same committed
-  alias discipline applies as everywhere else.
+**Ratified calls you should not silently revisit** (rulings in
+`handoffs/reports/0005b-questions-answers.md`, Q8–Q14):
+
+- Main AH line = closest-to-balanced (smallest |home − away| decimal),
+  ties to smaller |line| then lower line. "Nearest the model's own line"
+  was rejected **on principle**: a market-side attribute defined by the
+  model leaks the two tracks into each other. Remember that reasoning
+  before proposing any model-aware market attribute.
+- Exchange mids: renormalized to sum to 1, never de-vigged, never in
+  best price, shown under `market.books.{exchange}`. One rule for
+  Polymarket and Kalshi alike.
+- Bovada team totals are parsed (capture-where-offered); FanDuel's live
+  on a tab we don't fetch — backlog, not v1.
+
+**Two open items carried forward:**
+
+- `polymarket_name` is 0/167 populated and the open-market test fixture
+  is hand-built (disclosed). Polymarket lists no 2026-27 match-winner
+  market for the five launch leagues yet. The first live listing is the
+  trigger to populate aliases AND replace that fixture with a real
+  capture.
+- Kalshi soccer is gated — see §7.3 for the trigger and the four
+  already-answered contract questions. Don't start early.
+
+**The one that generalises past soccer:** the repo publishes
+`backtest.json` measured against closing lines straight to the
+public-read bucket. That is the exact surface where a licensed or
+provider-restricted historical price could leak into a public artifact —
+watch it on any backfill (§3, The Odds API historical carve-out, and the
+Pinnacle rule).
