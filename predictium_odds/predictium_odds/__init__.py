@@ -10,7 +10,9 @@ Install from the monorepo path:
     pip install "git+https://github.com/doyledettro-maker/predictium-api.git@<tag>#subdirectory=predictium_odds"
 
 Rules encoded here (org invariants, do not weaken):
-- The Odds API is banned. No adapter for it will ever be accepted.
+- The Odds API is banned from ingestion. No adapter for it will ever be
+  accepted. (The 2026-08-02 historical-backfill carve-out lives outside this
+  package and never authorizes one -- see the Books/Odds handover section 3.)
 - Alt-line ladders (Kalshi strikes, book alt lines) are ONLY comparable at
   the entry aligned to the consensus main line: lines.align_main_line.
   It fails loud (returns None + report) rather than picking a near strike.

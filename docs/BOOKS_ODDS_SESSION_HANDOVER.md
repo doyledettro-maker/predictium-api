@@ -67,8 +67,36 @@ one-repo-at-a-time work behind a flag with a parity check (§7).
 
 These are org rules, several of them written in blood.
 
-- **The Odds API is banned.** Never propose, add, or reintroduce it. NBA was
-  the last consumer; it's gone.
+- **The Odds API: banned from all ongoing ingestion; historical backfill
+  only, per task, on Doyle's say-so.** Amended 2026-08-02 (Doyle) — the
+  previous rule was an unconditional ban, and NBA's removal as the last
+  ongoing consumer still stands. What changed is narrow, and the two halves
+  are not negotiable against each other:
+  - **Never in a live path.** No adapter in `predictium_odds`, no client in
+    any repo's `books/` package, no import reachable from a publisher, cron,
+    launchd job, or scheduled workflow. The live tape stays keyless
+    direct-book + exchange. A PR adding it to an ingestion path is still
+    refused on sight.
+  - **Permitted:** one-off, human-initiated pulls of *historical* odds for a
+    specific modelling or backtest task, authorized per task. Not a standing
+    grant — "we may need it again" is not authorization for the next pull.
+  - **Every pull lands as a committed, reproducible artifact** — script,
+    cached payload, and provenance (endpoint, params, fetch timestamp,
+    credits spent) — the same standard as any Claudia bulk pull. A number
+    that can't be re-derived from a committed artifact didn't happen.
+  - **Key via env / GitHub Actions secrets only**, never committed. Note this
+    is the first non-keyless source in the stack; the "everything is keyless"
+    assumption below no longer holds without qualification.
+  - **Redistribution boundary — the one that bites.** Treat Odds API data
+    exactly like Pinnacle: INTERNAL-ONLY, `redistributable=False`. No
+    Odds-API-derived price may reach a published artifact or the public-read
+    predictions bucket, attributed or not. Model metrics *computed against*
+    it (log loss, CLV, calibration) are publishable; the prices themselves,
+    and any per-book table containing them, are not. This is the live risk:
+    several repos publish `backtest.json` objects measured against closing
+    lines straight to the public bucket, so a historical backfill that
+    silently becomes a published benchmark column is a licensing exposure,
+    not just a style violation.
 - **Keys via GitHub Actions secrets / env only.** Never committed. Note that
   every source we use today is keyless — if a new one needs a key, that's a
   Doyle decision, not a default.

@@ -72,7 +72,7 @@ price comparison** (now codified in `select_aligned_contract`, fail-loud).
 | **Caesars** | ✗ 403 from cloud AND residential | — | — | — | Gray | Skip |
 | **bet365** | not probed — known aggressive anti-bot + explicitly ToS-hostile | — | — | — | Hostile | **Do not pursue** |
 | **Fanatics / PointsBet** | PointsBet US no longer exists (Fanatics acquisition); Fanatics has no known public JSON | — | — | — | Unknown | Deprioritize |
-| The Odds API | — | — | — | — | **ORG-BANNED** | Never |
+| The Odds API | paid, keyed | ✗ ongoing | ✗ ongoing | ✗ ongoing | **Banned from all ongoing ingestion; historical backfill only, per task, on Doyle's say-so (2026-08-02)** | Never in a live path — see handover §3 |
 
 ### Follow-up candidates triaged (2026-07-25, Doyle's ask)
 
@@ -207,3 +207,33 @@ change can't break six pipelines at once.
   needs a real legal read before any productization. Kalshi (regulated,
   documented) and de-vigged *derived* consensus values are the defensible
   core of such a product; raw Bovada/FanDuel/Pinnacle passthrough is not.
+
+## 5. Policy amendment — The Odds API historical carve-out (2026-08-02)
+
+Doyle's call, recorded here and in `BOOKS_ODDS_SESSION_HANDOVER.md` §3
+(which holds the binding wording): the unconditional ban is now scoped to
+**ongoing ingestion**. Occasional pulls of *historical* odds for specific
+modelling tasks are permitted, authorized per task.
+
+Nothing about the live tape changes: no adapter in `predictium_odds`, no
+client in any repo's `books/` package, nothing reachable from a publisher
+or scheduled job. Every production path stays keyless direct-book +
+exchange.
+
+Two consequences worth stating plainly, because they are easy to miss:
+
+1. **It is the stack's first non-keyless source.** Every prior statement
+   that "every source we use today is keyless" now needs the qualifier.
+   Key via env / GitHub Actions secrets only.
+2. **It inherits the Pinnacle containment, not the Bovada one.** Odds API
+   data is INTERNAL-ONLY (`redistributable=False`): usable as a research /
+   backtest input, never uploadable to the public-read predictions bucket
+   and never present in a published artifact, attributed or not. Derived
+   metrics computed against it are publishable; the prices are not.
+
+The exposure to watch: several repos publish `backtest.json` measured
+against closing lines directly to the public bucket. A historical backfill
+that quietly becomes a published benchmark column would put licensed,
+provider-restricted prices on a public-read bucket. Any repo taking a
+backfill should state, in its own report, which published fields the
+backfill does and does not touch.
