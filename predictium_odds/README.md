@@ -31,7 +31,13 @@ this directory is the seed — split it out with history at that point.
 
 ## Rules (org invariants — do not weaken)
 
-1. **The Odds API is banned.** No adapter for it will be accepted.
+1. **The Odds API is banned from ingestion.** No adapter for it will be
+   accepted — not here, not in a repo's `books/` package, not anywhere a
+   publisher or scheduled job can reach. (Doyle scoped the org ban to
+   *ongoing* ingestion on 2026-08-02: one-off HISTORICAL backfills for a
+   named modelling task are allowed, authorized per task, and live outside
+   this package as committed artifacts. That carve-out never authorizes an
+   adapter. Terms in the Books/Odds handover §3.)
 2. **Main-line alignment before any price comparison.** Alt-line ladders
    (Kalshi strikes, book alt lines) are only comparable at the entry
    aligned to the consensus main line: `lines.align_main_line` /
