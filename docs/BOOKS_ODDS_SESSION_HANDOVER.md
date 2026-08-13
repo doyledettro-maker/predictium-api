@@ -83,19 +83,28 @@ one-repo-at-a-time work behind a flag with a parity check (§7).
 
 These are org rules, several of them written in blood.
 
-- **The Odds API: banned from all ongoing ingestion; historical backfill
-  only, per task, on Doyle's say-so.** Amended 2026-08-02 (Doyle) — the
-  previous rule was an unconditional ban, and NBA's removal as the last
-  ongoing consumer still stands. What changed is narrow, and the two halves
-  are not negotiable against each other:
+- **The Odds API: banned from all ongoing ingestion; historical pulls for
+  training/backtesting are standing-authorized.** Amended 2026-08-02
+  (Doyle), and **widened 2026-08-13 (Doyle, verbatim): "we will use the
+  odds api for historical data pulls when we need historical odds for
+  training or back testing models; i just don't want to use it as part of
+  our live ingestion."** The original unconditional ban and the per-task
+  approval step are both superseded; NBA's removal as the last ongoing
+  consumer still stands. The two halves are not negotiable against each
+  other:
   - **Never in a live path.** No adapter in `predictium_odds`, no client in
     any repo's `books/` package, no import reachable from a publisher, cron,
     launchd job, or scheduled workflow. The live tape stays keyless
     direct-book + exchange. A PR adding it to an ingestion path is still
     refused on sight.
-  - **Permitted:** one-off, human-initiated pulls of *historical* odds for a
-    specific modelling or backtest task, authorized per task. Not a standing
-    grant — "we may need it again" is not authorization for the next pull.
+  - **Permitted, standing:** pulls of *historical* odds for model training
+    or backtesting. **No per-task approval is required** (2026-08-13) —
+    if you need historical odds to train or backtest, pull them. The
+    authorization is scoped by PURPOSE, not by a ticket: training and
+    backtesting yes; anything that runs on a schedule or feeds the live
+    tape, no, and that is not a grey area.
+    The containment obligations below are what the permission is
+    conditional on, and they did not loosen.
   - **Every pull lands as a committed, reproducible artifact** — script,
     cached payload, and provenance (endpoint, params, fetch timestamp,
     credits spent) — the same standard as any Claudia bulk pull. A number
