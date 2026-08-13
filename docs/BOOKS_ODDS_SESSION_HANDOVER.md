@@ -1,7 +1,14 @@
 # Books & Odds session — role handover
 
-_Last updated 2026-07-27. Written by the session that built the shared odds
-layer, for whoever picks up the Books/Odds role next (any sport)._
+_Last updated 2026-08-13. Started by the session that built the shared odds
+layer; maintained by each session that holds the Books/Odds role (any sport)._
+
+**If you are reading this off `main`, check the date above.** The 2026-08-02
+Odds API scoping amendment (§3) and everything after it lived only on
+unmerged branches for eleven days, so a session that read `main` in good
+faith got the superseded unconditional ban. Verify a policy claim against
+the newest branch before acting on it, and prefer landing doc changes
+promptly over accumulating them on a branch.
 
 Read this first, then `docs/ODDS_INGESTION_COVERAGE_MATRIX.md` for the
 source-by-source detail. Both live here in `predictium-api` because odds work
@@ -43,10 +50,19 @@ pip install "git+https://github.com/doyledettro-maker/predictium-api.git@<sha>#s
 ```
 
 Every model repo pins it **by commit SHA**, currently
-`2da418a0712cf5c0054def6637df8dfc8d8a8b19`. Never float a branch. A real
-`odds-v0.1.0` tag is still unminted — tag pushes are blocked from remote
-sessions, so it needs a local `git tag -a odds-v0.1.0 <sha> && git push
-origin odds-v0.1.0` (Claudia's task list).
+`2da418a0712cf5c0054def6637df8dfc8d8a8b19`. Never float a branch.
+
+**`odds-v0.1.0` EXISTS — corrected 2026-08-13.** Earlier revisions of this
+doc (and the kickoff prompt derived from it) said the tag was unminted and
+sat on Claudia's task list. It does not: `git rev-list -n1 odds-v0.1.0`
+resolves to `2da418a`, the exact SHA every repo already pins, as an
+annotated tag dated 2026-07-25. Claudia minted it and the doc never caught
+up. Verify before repeating the claim — `git ls-remote --tags origin`.
+
+That means the remaining work is the reverse of what was written: the repos
+pin a raw SHA that a real tag now aliases, so each can move to
+`@odds-v0.1.0` at its next dependency touch. Cosmetic, not urgent — the
+pinned SHA and the tag are the same commit, so nothing is mispinned today.
 
 | Module | Contents |
 |---|---|
@@ -168,6 +184,27 @@ something looks wrong.
 10. **FanDuel host drift:** repos were split across `sbapi.nj` and
     `sbapi.mi`. Unify on `nj` unless a sport's markets are genuinely
     geo-gated.
+11. **Exchange short codes are unique per SERIES, not globally — and a
+    collision resolves to the WRONG club, confidently.** Found live in
+    soccer 2026-08-13. Kalshi's `LEV` is Levante in `KXLALIGAGAME` and
+    Levski Sofia in `KXUCLGAME`; `PAR` is Parma in Serie A and Paris FC in
+    Ligue 1. The soccer repo stores one globally-unique `kalshi_code`
+    column, so a LaLiga Levante contract resolved to `bul-levski-sofia`
+    and the event reported as *fully resolved*. Nothing mis-priced only
+    because the fixture join separately required the competition to match.
+    **This is the failure mode identity discipline is supposed to prevent,
+    and it passed every fixture test**, because the two codes never appear
+    in the same fixture file. Two lessons worth carrying to every repo
+    attaching an exchange:
+    - **Scope the alias to whatever namespace the source actually uses.**
+      A flat "book name → team" column silently assumes global uniqueness.
+      Check that assumption against a second series before trusting it.
+    - **"Resolved" is not "resolved correctly."** A resolver that returns a
+      valid id for a wrong club is worse than one that returns nothing.
+      Constrain the resolution by something independent (soccer now checks
+      the club's country against the competition's own country, derived
+      from the competition's `espn_slug` so it cannot drift) and make the
+      refusal loud.
 
 ---
 
@@ -198,6 +235,27 @@ In-season all-sources-down exits non-zero in NBA/WNBA/MLB.
 - **MLB** — pitcher outs + earned runs from Bovada, multi-line FanDuel O/U
   parse, Kalshi `KXMLBOUTS`/`KXMLBKS` ladders as a third prop source.
 - **WNBA / CFB** — health monitoring; adapters unchanged.
+- **Golf** — new to this role; see §5a below. No shared layer, no health
+  monitoring, books at probe stage only.
+- **Soccer (2026-08-13 update): Kalshi now reaches the published board.**
+  The domestic series opened (numbers in §7.3), 74 `kalshi_code` values
+  are committed, and `kalshi_code` is 94/234. Live domestic resolution
+  **45/49 events** (EPL 10/10, LaLiga 18/20, SerieA 9/10, Ligue1 8/9).
+  Three clubs — Levante, Parma, Paris FC — are deliberately uncommitted
+  because their codes collide under a globally-unique column (trap #11);
+  that is escalated as Q6 in the soccer repo's
+  `handoffs/reports/0005d-ucl-questions.md` as a schema decision for its
+  Planner, with a recommendation to competition-scope the column.
+  **No contract or frontend change was needed:** Kalshi flows through the
+  existing generic `market.books{}` map (`publish/market.py::_books_breakdown`
+  groups over all books; only the *consensus vector* excludes exchanges),
+  and the frontend renders any exchange key via `lib/book-format.ts`
+  (`isExchangeBook`) + `orderedBookNames`. Worth knowing for the other
+  repos' Kalshi attaches: if the frontend already has a generic per-book
+  map, attaching an exchange is a backend-identity job, not a UI job.
+  Still owed: nobody has run `publish_soccer.py` against a built `data/`
+  to see Kalshi in an actual payload — `data/` is gitignored so a cloud
+  session cannot. That is a Claudia task.
 - **Soccer** — shipped 2026-08-02 (spec `0005b-market-clients`, branch
   `claude/books-odds-session-8rndry`). Keyless Bovada + FanDuel +
   Polymarket clients feeding ONE quote frame:
@@ -228,10 +286,45 @@ In-season all-sources-down exits non-zero in NBA/WNBA/MLB.
 
 - Mac Mini prod checkouts must `git pull` for tennis + MLB changes to reach
   the live tape (Claudia's task list).
-- `odds-v0.1.0` tag unminted (see §2).
+- ~~`odds-v0.1.0` tag unminted~~ — **done**, see §2 (corrected 2026-08-13).
 - Soccer: quote frame shipped and all rulings ratified; the Coder is
   merging that branch under spec 0005c rev 2. Kalshi soccer is a GATED
   backlog item owned by this role (§7.3).
+  **Update 2026-08-13: ungated and shipped** — see §5 "Soccer" below.
+
+### 5a. Golf — new to this role, diagnosed 2026-08-13
+
+Golf is the one genuinely new sport repo and the only one with **no
+book-health monitoring at all** — a dead source there fails silently today.
+
+- **Zero `predictium_odds` adoption**: no import anywhere, no health
+  reporting. Every other model repo has at least the soft-import health line.
+- **No book clients in the pipeline.** `golf_model/ingest/` holds only
+  `espn.py` and `espn_core.py`. Books exist purely as probes under
+  `scripts/probes/` (`probe_books.py`, `probe_kalshi.py`,
+  `probe_polymarket.py`, `probe_datagolf.py`).
+- **Its own de-vig copy** in `golf_model/markets/devig.py` + `clv.py` —
+  another divergent implementation against shared `oddsmath`. Building
+  golf's clients on the shared adapters avoids creating a seventh.
+- **The Odds API usage there is correctly contained** and worth copying as
+  the reference shape for the amended policy: `scripts/ingest_theoddsapi_golf.py`
+  writes to `data/internal/theoddsapi/`, the manifest carries
+  `endpoint_policy: "historical_only"`, rows carry a `license_class`
+  column, provenance is per-call (sha256, quota, credits — 1,117 actual vs
+  1,080 planned), the key comes from the keychain via subprocess, and
+  nothing in `ops/jobs/` or `golf_model/` references it.
+- **Live capture evidence** (FedEx St. Jude, 2026-08-10, both books,
+  69/70 runners each): Bovada 47.4% overround (63rd pctile of majors),
+  FanDuel 39.0% (50.7th). Kalshi golf depth is still **unmeasured, not
+  absent** — the only probe ran on a quiet week (2026-08-08, `degraded:
+  true`, most series 0 open markets). Re-probe on a live tournament week.
+- Note when reading `fixtures/probes/books/summary.json`: its
+  `licensing_verdict: BLOCKED` on Bovada and FanDuel is the **strict
+  pre-ratification reading, deliberately kept visible**. It was since recast
+  under the ratified two-surface posture. Not a live blocker.
+- Golf runs **no GitHub Actions** (org cost decision) — Mac Mini launchd
+  only — and has 4-agent governance in `handoffs/multi_session_workflow.md`.
+- Target **T1 2026-10-15**: odds/CLV logging live on Bovada/FanDuel/Kalshi.
 
 ---
 
@@ -293,6 +386,13 @@ In rough priority order:
    domestic series (`KXEPLGAME`, `KXLALIGAGAME`, `KXBUNDESLIGAGAME`,
    `KXSERIEAGAME`, `KXLIGUE1GAME`) list ZERO open markets in preseason —
    re-probe when the leagues start rather than assuming they stay empty.
+   **DONE 2026-08-13 — they opened, and re-probing was right.** Live:
+   `KXEPLGAME` 30 markets/10 events, `KXLALIGAGAME` 60/20 (+ TOTAL 42/7,
+   SPREAD 28/7, BTTS 7/7), `KXSERIEAGAME` 30/10, `KXLIGUE1GAME` 27/9,
+   `KXUCLGAME` 21/7. `KXBUNDESLIGAGAME` is still 0 — Bundesliga simply
+   starts later, so that one is a quiet no-op, not a break. 74 domestic
+   `kalshi_code` values committed; see §5 "Soccer" for the identity trap
+   this exposed.
 4. **Kalshi spread/total for tennis** — the series exist
    (`KXATPGAMESPREAD`, `KXATPGAMETOTAL`) but list zero markets. When they
    open, the alignment machinery is already in place.
