@@ -74,6 +74,37 @@ price comparison** (now codified in `select_aligned_contract`, fail-loud).
 | **Fanatics / PointsBet** | PointsBet US no longer exists (Fanatics acquisition); Fanatics has no known public JSON | — | — | — | Unknown | Deprioritize |
 | The Odds API | paid, keyed | ✗ ongoing | ✗ ongoing | ✗ ongoing | **Banned from all ongoing ingestion; historical backfill only, per task, on Doyle's say-so (2026-08-02)** | Never in a live path — see handover §3 |
 
+### Novig — PROBED LIVE 2026-08-13, viable, narrow
+
+Full write-up and plan: `docs/NOVIG_KALSHI_DISPLAY_PLAN.md`. Summary for
+the matrix:
+
+| Source | Access | Auth | GL | PP | FUT | LIVE | ToS posture | Verdict |
+|---|---|---|---|---|---|---|---|---|
+| **Novig** | Hasura GraphQL `api.novig.us/v1/graphql` (+ `wss://`), discovered from the Expo bundle at `app.novig.us`; REST paths all return `hello`, a catch-all that hides it | **none** — anonymous introspection enabled | ✅ MLB/WNBA liquid; NFL listed, preseason | ◐ listed, unquoted | ◐ | ✅ has live flags | Gray — keyless but an undocumented internal API, same class as Bovada/FanDuel | **Adopt, gated hard on liquidity** |
+
+- **It is an EXCHANGE**: `outcome.last` sums to exactly 1.0000. Never
+  de-vig, never in the sportsbook consensus — inherits Kalshi/Polymarket
+  treatment via `EXCHANGE_BOOKS`.
+- **Two price fields**: `last` (last traded, sums to 1) vs `available`
+  (takeable/ask, sums to ~1.015–1.02). **EV must use `available`** — the
+  Kalshi mid-vs-ask rule, again.
+- **No browser scraping needed**, which was the original premise. A keyless
+  HTTP adapter replaces driving a headless browser.
+- **Liquidity is brutally bimodal.** Of 800 sampled open pregame markets,
+  two-sided quotes: MLB 18/259 (7%, 3.50% median spread), WTA 12/224 (5%,
+  10.00%), ATP 15/188 (8%, 8.50%), **EPL 0/121**, **PGA 0/8**. Top-of-book
+  is excellent (MLB/WNBA game lines at 1.5–2% on $25k–$160k volume) and
+  collapses immediately below it.
+- **Soccer is unusable today**: all 121 EPL markets are two-outcome player
+  props; no 1X2, totals or spreads listed at all.
+- **Account risk**: we hold a real-money betting account there. The read
+  path must stay unauthenticated forever, and `order`/`fill` must never be
+  queried (they expose other users' pseudonymous trade records).
+- Events carry `optic_odds_id` / `unabated_id` — Novig seeds lines from
+  commercial aggregators. `market.is_consensus` semantics unknown; do not
+  use as a filter until established.
+
 ### Follow-up candidates triaged (2026-07-25, Doyle's ask)
 
 - **Circa**: no keyless path — sportsbook is geo-gated native apps only;
