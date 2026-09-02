@@ -14,6 +14,7 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 
 from app.config import get_settings
 from app.db.database import engine
@@ -65,6 +66,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 await conn.run_sync(
                     PageView.metadata.create_all,
                     tables=[PageView.__table__, TwitterFollowerSnapshot.__table__],
+                )
+                # create_all never alters an existing table. Columns added
+                # after 006 are applied here idempotently so a deploy is
+                # self-healing (canonical DDL: Predictium_Front_End/database/
+                # migrations/008_page_views_utm_content.sql).
+                await conn.execute(
+                    text("ALTER TABLE page_views ADD COLUMN IF NOT EXISTS utm_content VARCHAR(128)")
                 )
             report_task = asyncio.create_task(daily_report_loop())
         except Exception:
