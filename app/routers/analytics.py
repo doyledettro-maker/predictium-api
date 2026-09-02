@@ -50,6 +50,7 @@ class PageViewEvent(BaseModel):
     utm_source: Optional[str] = None
     utm_medium: Optional[str] = None
     utm_campaign: Optional[str] = None
+    utm_content: Optional[str] = None
     visitor_id: Optional[str] = None
     session_id: Optional[str] = None
     user_id: Optional[str] = None
@@ -84,6 +85,7 @@ async def ingest_pageviews(
             "utm_source": _trunc(e.utm_source, 128),
             "utm_medium": _trunc(e.utm_medium, 128),
             "utm_campaign": _trunc(e.utm_campaign, 128),
+            "utm_content": _trunc(e.utm_content, 128),
             "visitor_id": _trunc(e.visitor_id, 64),
             "session_id": _trunc(e.session_id, 64),
             "user_id": _trunc(e.user_id, 64),

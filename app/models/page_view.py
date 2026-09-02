@@ -26,6 +26,10 @@ class PageView(Base):
     utm_source: Mapped[str | None] = mapped_column(String(128), nullable=True)
     utm_medium: Mapped[str | None] = mapped_column(String(128), nullable=True)
     utm_campaign: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # The post slot inside a campaign (board / edges / receipts / midday ...).
+    # Every posted link has carried it since 2026-07 and it was dropped here
+    # at ingest, so no tweet slot could be tied to a visit (found 2026-09-02).
+    utm_content: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # Anonymous first-party visitor cookie (not PII); session groups a visit
     visitor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

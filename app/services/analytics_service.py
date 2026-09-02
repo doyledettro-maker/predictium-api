@@ -88,6 +88,68 @@ REFERRER_HOST_EXPR = (
 )
 
 
+async def _campaign_content(
+    db: AsyncSession, start: date, end: date, limit: int = 30
+) -> list[dict[str, Any]]:
+    """Campaign × content: which slot inside a campaign (board, edges,
+    receipts, midday ...) earned the visit. The admin could only show the
+    campaign total before, so a five-tweet thread was one row."""
+    q = text(
+        f"""
+        SELECT utm_campaign,
+               COALESCE(utm_content, '') AS utm_content,
+               COUNT(*) AS views,
+               COUNT(DISTINCT visitor_id) AS visitors
+        FROM page_views
+        WHERE {_local_date_expr()} BETWEEN :start AND :end
+          AND NOT is_bot AND utm_campaign IS NOT NULL
+        GROUP BY 1, 2
+        ORDER BY views DESC
+        LIMIT :limit
+        """
+    )
+    rows = (await db.execute(q, {"tz": TZ, "start": start, "end": end, "limit": limit})).all()
+    return [
+        {
+            "utm_campaign": r.utm_campaign,
+            "utm_content": r.utm_content,
+            "views": int(r.views),
+            "visitors": int(r.visitors),
+        }
+        for r in rows
+    ]
+
+
+async def _twitter_landing_pages(
+    db: AsyncSession, start: date, end: date, limit: int = 15
+) -> list[dict[str, Any]]:
+    """Top landing paths for visits that came from X: a utm_source=twitter
+    tag, or a t.co / x.com / twitter.com referrer (untagged clicks from the
+    profile link and replies arrive that way)."""
+    q = text(
+        f"""
+        SELECT path,
+               COUNT(*) AS views,
+               COUNT(DISTINCT visitor_id) AS visitors
+        FROM page_views
+        WHERE {_local_date_expr()} BETWEEN :start AND :end
+          AND NOT is_bot
+          AND (utm_source = 'twitter'
+               OR (referrer IS NOT NULL AND referrer <> ''
+                   AND {REFERRER_HOST_EXPR} IN ('t.co', 'x.com', 'twitter.com',
+                                                'mobile.twitter.com')))
+        GROUP BY 1
+        ORDER BY views DESC
+        LIMIT :limit
+        """
+    )
+    rows = (await db.execute(q, {"tz": TZ, "start": start, "end": end, "limit": limit})).all()
+    return [
+        {"path": r.path, "views": int(r.views), "visitors": int(r.visitors)}
+        for r in rows
+    ]
+
+
 async def _top_referrers(
     db: AsyncSession, start: date, end: date, limit: int = 15
 ) -> list[dict[str, Any]]:
@@ -345,6 +407,8 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
             db, "utm_campaign", "utm_campaign", *window_30,
             where_extra="AND NOT is_bot AND utm_campaign IS NOT NULL", limit=15,
         ),
+        "utm_campaign_content": await _campaign_content(db, *window_30),
+        "twitter_landing_pages": await _twitter_landing_pages(db, *window_30),
         "devices": await _top_list(db, "COALESCE(device, 'unknown')", "device", *window_30, limit=5),
         "countries": await _top_list(
             db, "COALESCE(country, '??')", "country", *window_30, limit=10
