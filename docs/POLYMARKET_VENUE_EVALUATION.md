@@ -192,43 +192,88 @@ than take.
 
 ---
 
-## Q4. Liquidity at our actual size — ADEQUATE AT PROBE, THINS AT SCALE
+## Q4. Liquidity at our actual size — THE TOUCH IS TIGHT, THE BOOK IS THIN
 
-Measured against the live schedule: `market-scope-2026-09-19.1`, bankroll
-$20,000 committed, tier caps to-win Probe $200 / Core $600 / Scale $1,000,
-per-bet risk cap $1,000, per-event $1,600.
+**Revised 2026-09-20, second pass.** My first pass measured futures depth
+and read encouragingly. Pre-match game lines — what we would actually trade
+— look materially worse, and that distinction is the whole answer.
 
-Method: pulled real order books from `/v1/markets/{slug}/book`, walked the
-offer side, and computed the contracts needed to win each tier target
-(N = target / (1 − price)) and the volume-weighted slippage against the touch.
-34 books with genuine two-sided quotes were measured.
+### Correcting two errors in the first pass
 
-Flat results, format: league / books measured / mean touch spread / fill
-rate and mean slippage per tier.
+**Error one: I concluded Polymarket US was a futures venue. It is not.**
+The `/v1/events` endpoint caps at 500 per page and I drew conclusions from
+page one twice. Paginating properly with `offset`:
 
-MLB / 24 books / touch spread 1.01 cents /
-  Probe $200: 24/24 fillable, 0.54 cents slippage
-  Core $600: 24/24 fillable, 1.20 cents slippage
-  Scale $1,000: 24/24 fillable, 2.06 cents slippage
+- **4,096 distinct open events**
+- **60,357 non-futures markets**, of which **44,249 have a future start**
+- By league: NFL 20,089, CFB 15,365, MLB 1,776, WTA 428, Serie A 395,
+  La Liga 395, EPL 318
+- Types include full-game spread (4,097 pre-match), full-game total (1,706),
+  team points total, first-half and second-half spreads and totals, exact
+  margin, player touchdowns, total first downs, rush yards, and soccer
+  full-time winner (1,101)
 
-MLS / 10 books / touch spread 1.51 cents /
-  Probe $200: 10/10 fillable, 1.93 cents slippage
-  Core $600: 10/10 fillable, 4.96 cents slippage
-  Scale $1,000: 10/10 fillable, 12.42 cents slippage
+So the breadth is real and large, and heavily NFL and CFB.
 
-Read that carefully. On MLB the venue is genuinely good: a Probe ticket costs
-about half a cent of slippage on a one-cent spread. On MLS the same Probe
-ticket costs nearly two cents, and a Scale ticket costs **12.4 cents**, which
-would destroy any edge we think we have. The venue is not uniformly liquid
-and must be gated per sport and per market, not adopted wholesale.
+**Error two: futures depth does not predict game-line depth.** It is better.
 
-**Sampling limits, stated honestly.** The 70 markets I sampled resolved to
-MLB and MLS only; **NFL and CFB depth is unmeasured** despite being the
-largest open surfaces (240 and 83 open events). Open markets also skewed
-overwhelmingly to futures — 496 of 500 sampled were `sportsMarketType:
-futures` — so this measures futures depth, not game-line depth. Both gaps
-are straightforward to close and should be closed before any funding
-decision, because NFL and CFB game lines are where our actual volume is.
+### Pre-match game-line depth, measured
+
+Method: paginated all open events, filtered to non-futures market types with
+a future game start, pulled real order books, **excluded settled and
+near-settled markets** (best ask ≥ 0.98 or ≤ 0.02 — the 0.999-bid/1.00-ask
+trap tennis flagged, which is real here too: 10 of 99 sampled books were
+settled, 6 CFB and 4 NFL). Walked the offer side for each tier target and
+measured volume-weighted slippage against the touch.
+
+Flat lines, format: league / tradeable books / mean touch spread / fill rate
+and slippage per tier.
+
+NFL / 36 books / touch spread 0.75 cents /
+  Probe $200: 36/36 fillable, 0.80 cents slippage
+  Core $600: 36/36 fillable, 6.14 cents slippage
+  Scale $1,000: 36/36 fillable, 10.42 cents slippage
+
+CFB / 34 books / touch spread 23.04 cents /
+  Probe $200: 27/34 fillable (79%), 29.75 cents slippage
+  Core $600: 27/34 fillable, 44.07 cents slippage
+  Scale $1,000: 27/34 fillable, 46.96 cents slippage
+
+MLB / 6 books / touch spread 0.67 cents /
+  Probe $200: 6/6 fillable, 7.68 cents slippage
+  Core $600: 6/6 fillable, 14.37 cents slippage
+  Scale $1,000: 6/6 fillable, 19.26 cents slippage
+
+NCAA women's / 9 books / touch spread 83.11 cents / 1 of 9 fillable at Probe
+USL Championship / 4 books / touch spread 55.75 cents / 2 of 4 at Core
+
+### What this actually says
+
+**A tight touch is not depth, and on this venue the gap between them is
+enormous.** NFL quotes 0.75 cents at the touch — better than anything else
+we carry — and then costs 6.14 cents to fill a Core ticket and 10.42 to fill
+a Scale one. The top of book is excellent and there is very little behind it.
+
+The one genuinely usable configuration today is **NFL at Probe size**: 100%
+fillable at 0.80 cents of slippage, which is competitive with Novig and
+better than any sportsbook. That is a real finding and it is narrow.
+
+Everything else fails on our numbers. CFB has a 23-cent touch spread despite
+15,365 pre-match markets, so breadth there is listing breadth, not
+tradeable breadth. MLB's touch is the tightest measured at 0.67 cents and
+still costs 7.68 cents at Probe, meaning almost nothing rests behind the
+quote. Anything above Probe size, in any sport, pays more slippage than our
+edge.
+
+**Recommended gate if we ever trade here:** NFL full-game spreads and totals
+at Probe size only, with a per-order slippage ceiling enforced at execution
+(walk the book before sending, refuse if VWAP exceeds touch by more than a
+stated bound). Do not enable by sport on breadth; enable by measured depth
+and re-measure, because these numbers will move as the venue grows.
+
+**Still unmeasured:** in-season NBA and NHL (season not started at probe
+time), and whether NFL depth improves closer to kickoff. Both are worth a
+second pass during a live Sunday slate before any funding decision.
 
 ---
 
@@ -342,26 +387,40 @@ labelling it correctly and never letting it price a bet. Recommendation:
 
 ## Recommendation
 
+**Revised 2026-09-20 after measuring pre-match depth.** The verdict is
+narrower than the first pass suggested, and the narrowing is the finding.
+
 On the evidence, **Polymarket US clears the bars that could have killed it**.
 It is a CFTC-designated contract market, it lists every sport we model, its
 resolution model is rulebook-based with named league sources rather than an
-oracle, its fees are at parity with Kalshi with a better maker rebate, and
-its books are genuinely tight on the liquid sports.
+oracle, and its fees are at parity with Kalshi with a better maker rebate.
 
-I am **not** recommending funding it yet, because four things are open and
-three of them are cheap to close:
+**But depth, not legality, decides this, and depth says NFL at Probe size
+and nothing else.** NFL full-game markets fill a $200-to-win ticket at 0.80
+cents of slippage on a 0.75-cent touch, which is genuinely competitive. The
+same book costs 6.14 cents at Core and 10.42 at Scale. CFB carries 15,365
+pre-match markets at a 23-cent touch spread, which is listing breadth rather
+than tradeable breadth. On our unit sizes this is one sport, one tier, today.
 
-1. Page 3 of the Amended Order — the conditions — is unread (scanned image).
+I am **not** recommending funding it, for two different kinds of reason.
+
+Cheap lookups still open:
+
+1. Page 3 of the Amended Order, the conditions, is unread (scanned image).
 2. The CFTC-filed rulebook has not been read, which is where finality,
    dispute recourse and fund segregation are actually defined.
 3. Custody and segregation of participant cash is undocumented publicly.
 4. Tax reporting is undocumented; assume we self-report until told otherwise.
+5. Polymarket US is **not covered by the ratified Polymarket terms row** —
+   that row is about the offshore Gamma/CLOB surface. The US DCM is a
+   different venue and needs its own clearance under the new precondition.
 
-Plus one that is real work rather than a lookup: **NFL and CFB game-line
-depth is unmeasured**, and that is where our volume would actually go. The
-MLS numbers show what happens when we assume depth transfers across sports.
+And one that is judgement rather than lookup: **a venue that supports one
+sport at one tier is not worth a funding decision yet.** The right move is
+to re-measure during a live Sunday NFL slate, see whether depth thickens
+near kickoff, and check NBA and NHL once their seasons start. If NFL depth
+holds at Core size in-season this becomes interesting; if it does not, we
+have learned that cheaply with nothing at risk.
 
-If Doyle wants to move, the cheapest order is: read the CFTC-filed rulebook,
-ask support the custody and 1099 questions in writing, and let me measure
-NFL and CFB game-line depth during a live slate. None of that requires an
-account, a dollar, or a decision he cannot reverse.
+Meanwhile the capture case is strong and separable from the trading case.
+The US venue's public gateway is keyless and the tape costs nothing to keep.
