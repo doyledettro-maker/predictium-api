@@ -8,6 +8,55 @@ before relying on them._
 Companion: `POLYMARKET_VENUE_EVALUATION.md` (whether we should trade
 Polymarket at all) and `ODDS_INGESTION_COVERAGE_MATRIX.md` (all sources).
 
+> ## ⛔ NOVIG CAPTURE IS ON HOLD — 2026-09-20
+>
+> **Do not build, schedule or run any capture of Novig data.** Novig's Terms
+> of Use, updated 2026-05-05, prohibit scraping, building databases, and
+> creating permanent copies of Service-derived content. Keyless and
+> technically reachable is not the same as permitted.
+>
+> The Novig section below documents endpoints and market types. It is
+> retained as a record of what was observed and as input to a licence or
+> written-permission request now being drafted for Doyle. **It is not
+> authorization to collect.** Until Novig is terms-cleared in writing as a
+> committed document, treat the Novig section as reference, not a build spec.
+>
+> Prior art that reached this conclusion first, a month before this
+> inventory's probes: `tennis_prediction_model_2026/docs/novig_endpoint_probe.md`
+> (2026-07-14). It found the same keyless endpoints and recommended against
+> using them on exactly this basis.
+>
+> **Standing precondition, now part of the capture standard:** a venue must
+> be terms-cleared in writing, as a committed document, before any scheduled
+> capture of its data begins. Books & Odds owns that clearance per venue.
+
+## Terms-clearance status per venue
+
+Flat lines, format: venue / status / basis.
+
+Novig / **ON HOLD, NOT CLEARED** / ToU updated 2026-05-05 prohibits
+scraping, database building and permanent copies of Service-derived content.
+Commercial licence or written permission is the defensible route. Our own
+authenticated orders and fills are a separate question, under review.
+
+Kalshi / **CLEAR for internal exchange logging and derived probabilities** /
+Doyle ratified the official public market-data surface; raw books do not
+publish. Per golf `research/05_data_source_inventory.md`.
+
+Polymarket Gamma/CLOB (offshore) / **CLEAR for internal exchange logging and
+derived probabilities** / Doyle ratified; raw books never publish. Terms
+captured at `golf_prediction_model_2026/research/tos/polymarket_terms.txt`.
+Strict pre-ratification reading NEEDS_DOYLE is retained on the record.
+
+Polymarket US (`gateway.polymarket.us`) / **NOT SEPARATELY CLEARED** / the
+ratified row covers the offshore Gamma/CLOB surface. The US DCM is a
+different venue with different terms. Do not assume the clearance carries
+across.
+
+Bovada, FanDuel / **INTERNAL_ONLY, ratified accepted-org-risk** / raw and
+book-attributed prices never publish; strict readings retained.
+
+
 ## Access patterns — read this before writing a client
 
 Novig: Hasura GraphQL, `POST https://api.novig.us/v1/graphql`, anonymous,
