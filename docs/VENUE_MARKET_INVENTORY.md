@@ -48,6 +48,23 @@ terms: it is the one venue holding real money. Only exception: authenticated
 activity through our own funded account. Permission request drafted:
 `NOVIG_DATA_ACCESS_REQUEST.md`.
 
+  **Found 2026-09-26 in NFL, safe by default but not safe by construction.**
+  `nfl_prediction_model_2026/nfl_model/data/books/novig.py::fetch_quotes` is
+  called on every live publish from `scripts/daily_driver.py`. It is gated:
+  unless `NFL_NOVIG_CAPTURE` is set truthy it returns `[]` and makes no
+  request, which is the default. But if the flag is ever set, it tries the
+  authenticated NBX API and, **on any NBX failure, falls back to the
+  anonymous public GraphQL at `gql.novig.com`**. It also carries a fallback
+  that switches to system curl after an HTTP 403, added after the Mac mini
+  got 403s from `gql.novig.com` on every Python client variant. That is the
+  exact case the no-touch rule exists for: a host that has visibly put up a
+  bot check. Recommended to NFL: delete the anonymous GraphQL fallback and
+  the 403-to-curl switch so the only path is authenticated NBX, and add a
+  no-touch test like CFB's `tests/test_novig_no_touch.py`. Nothing is
+  touching Novig today as far as the code shows; this relies on the flag
+  staying unset on the Mac mini, which cannot be verified from a cloud
+  session.
+
 Polymarket offshore (polymarket.com; gamma and clob hosts; Adventure One QSS
 Inc.) / **NOT CLEARED — RULED: no collector (Doyle, 2026-09-26)** / Terms
 effective 2026-08-11, read at source: §4.2 bars data-mining tools, robots,
