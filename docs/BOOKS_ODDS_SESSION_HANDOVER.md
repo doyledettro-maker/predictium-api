@@ -231,6 +231,55 @@ something looks wrong.
       `SourceReport(ok=False)`, and the note names the code explicitly
       rather than trusting `str(e)` to carry it.
 
+13. **Reading a row is not reading the terms.** On 2026-09-20 I was asked
+    for an independent check of golf's ratified Polymarket CLEAR row. I
+    confirmed the row said what it said and reported no quarrel with it. The
+    file it cited was a 1,585-byte navigation shell with no terms text in it.
+    The CFB session later read the real 59,371-byte terms at source and they
+    prohibit exactly the capture the row cleared. An independent check that
+    validates a verdict against its own summary is not independent. Open the
+    cited file, check its size and that the clauses are actually in it.
+14. **A correction given in chat and not committed is not a correction.** On
+    NFL Sunday I re-measured Polymarket NFL depth, found my earlier 0.75-cent
+    touch was a lucky sub-sample (true figure 7.95 cents), and told Doyle in
+    chat — but never updated the committed evaluation. Six days later the
+    stale number was the stated premise of a Doyle ruling. The doc is what
+    other sessions read. Findings go in the doc the same turn.
+15. **A permission letter must describe us completely, including the paid
+    product.** Predictium sells subscriptions to model outputs. Describing
+    ourselves as "a private modelling operation" is true about how a venue's
+    data would be used and false about who we are, and venue terms turn on
+    exactly that ("non-commercial", "financial technology companies",
+    "proprietary trading firms"). A yes obtained on an incomplete description
+    is void when the rest comes out.
+
+---
+
+## 5b. Polymarket ruling (Doyle, 2026-09-26) — standing
+
+Option 1, relayed by Portfolio/Risk:
+
+- **No standalone Polymarket collector on either venue.** No tape, no bulk
+  pulls, no scheduled capture, in any repo.
+- **Execution-incidental data allowed**: quotes and fills our own executor
+  receives while trading Polymarket US through the official trading API may
+  be stored internally, never public. Only once we trade there; the account
+  is Doyle's step, the executor Claudia's.
+- **Permission requested in parallel**: drafts in
+  `docs/POLYMARKET_DATA_PERMISSION_REQUESTS.md`, one to QCX LLC for a
+  market-data licence and one to Adventure One QSS Inc. for §4.2 written
+  consent. Doyle sends them himself.
+
+Terms read at source, full captures on golf branch
+`claude/golf-polymarket-terms` @ `e674812`: offshore effective 2026-08-11
+(59,371 bytes), US effective 2025-09-25 (26,774 bytes). Clause offsets and
+verbatim text are in the permission-requests doc.
+
+Sessions to carry this: CFB, golf, soccer, WNBA. CFB already holds both rows
+at not-cleared with the evidence in `capture/terms_clearance.json`. Golf's
+inventory still shows the offshore CLEAR cell, which stands as Doyle's
+ratification on the record but is now superseded by the ruling.
+
 ---
 
 ## 5a. Open handoff — NFL's private copy of `_paged` (2026-09-26)

@@ -32,30 +32,57 @@ Polymarket at all) and `ODDS_INGESTION_COVERAGE_MATRIX.md` (all sources).
 
 ## Terms-clearance status per venue
 
+_Books & Odds owns this register. Updated 2026-09-26 on Doyle's Polymarket
+ruling. Standing precondition: a venue must be terms-cleared in writing, as a
+committed document, before any scheduled capture of its data begins.
+**Check that a verdict's evidence is real** — read the file a row cites, not
+the row. A CLEAR resting on a page shell or a 429 has been read by nobody._
+
 Flat lines, format: venue / status / basis.
 
-Novig / **ON HOLD, NOT CLEARED** / ToU updated 2026-05-05 prohibits
-scraping, database building and permanent copies of Service-derived content.
-Commercial licence or written permission is the defensible route. Our own
-authenticated orders and fills are a separate question, under review.
+Novig / **NOT CLEARED — and no session may touch a Novig domain at all**,
+any volume, any purpose, including connectivity checks / ToU updated
+2026-05-05 prohibits scraping, database building and permanent copies of
+Service-derived content. The no-touch rule is about the account, not the
+terms: it is the one venue holding real money. Only exception: authenticated
+activity through our own funded account. Permission request drafted:
+`NOVIG_DATA_ACCESS_REQUEST.md`.
 
-Kalshi / **CLEAR for internal exchange logging and derived probabilities** /
-Doyle ratified the official public market-data surface; raw books do not
-publish. Per golf `research/05_data_source_inventory.md`.
+Polymarket offshore (polymarket.com; gamma and clob hosts; Adventure One QSS
+Inc.) / **NOT CLEARED — RULED: no collector (Doyle, 2026-09-26)** / Terms
+effective 2026-08-11, read at source: §4.2 bars data-mining tools, robots,
+crawlers and scraping; manual copying needs prior written consent; access by
+a "Capital Market Client" (incl. fintech and proprietary trading firms) needs
+a written agreement; the terms bind API access explicitly. US persons cannot
+trade it. Golf's earlier "CLEAR" row cited a 1,585-byte page shell and was
+ratified without these terms having been read.
 
-Polymarket Gamma/CLOB (offshore) / **CLEAR for internal exchange logging and
-derived probabilities** / Doyle ratified; raw books never publish. Terms
-captured at `golf_prediction_model_2026/research/tos/polymarket_terms.txt`.
-Strict pre-ratification reading NEEDS_DOYLE is retained on the record.
+Polymarket US (gateway.polymarket.us; QCX LLC, CFTC DCM) / **NOT CLEARED —
+RULED: no collector (Doyle, 2026-09-26); execution-incidental data allowed
+once trading** / Terms effective 2025-09-25, read at source: §5 licenses
+market data for "personal, non-commercial use in connection with your
+trading" and bars "scraping, bulk downloads" unless expressly licensed; §7(c)
+allows automation only through authorized APIs, which covers trading, not an
+organisation's data tape. Quotes and fills our own executor receives while
+trading through the official API may be stored internally, never public.
+Permission request drafted: `POLYMARKET_DATA_PERMISSION_REQUESTS.md`.
 
-Polymarket US (`gateway.polymarket.us`) / **NOT SEPARATELY CLEARED** / the
-ratified row covers the offshore Gamma/CLOB surface. The US DCM is a
-different venue with different terms. Do not assume the clearance carries
-across.
+Kalshi / **CLEAR on ratified accepted risk, not on a clean terms read** /
+CFTC-regulated exchange, documented public market-data API, Doyle-ratified;
+raw books do not publish. Its terms capture is a 429, so the terms text has
+not actually been read.
 
-Bovada, FanDuel / **INTERNAL_ONLY, ratified accepted-org-risk** / raw and
-book-attributed prices never publish; strict readings retained.
+Bovada / **CLEAR on ratified accepted risk** / no scraping prohibition found,
+but the 539 KB ToS PDF's text was never extracted, so the absence is not
+fully established. Raw and book-attributed prices never publish.
 
+FanDuel / **CLEAR on ratified accepted risk only** / its terms EXPRESSLY
+prohibit automated access "for any purpose"; cleared on Doyle's knowing
+acceptance alone. Raw and book-attributed prices never publish.
+
+Note that **nothing on this register is cleared on a clean terms read.** The
+three cleared venues all rest on Doyle's accepted risk; the three that were
+actually read at source all came back prohibitive.
 
 ## Access patterns — read this before writing a client
 
@@ -197,6 +224,12 @@ Kalshi, GET on `https://api.elections.kalshi.com/trade-api/v2`:
 - `/markets?series_ticker={KXSTEM}{FAMILY}&status=open&limit=200` (cursor-paged)
 - `/events`, `/series`, `/markets/{ticker}/orderbook`
 
+> **No collector may be built against either Polymarket venue** (Doyle,
+> 2026-09-26). The paths below are a record of what the public gateway
+> exposes, kept as input to the licence request. They are not authorization
+> to collect. Once we trade Polymarket US, execution-incidental data comes
+> through the official trading API, not these public routes.
+
 Polymarket US, GET on `https://gateway.polymarket.us/v1`:
 - `/sports` — all sports and leagues, with resolution source
 - `/markets?closed=false&limit=500` — open markets
@@ -206,4 +239,6 @@ Polymarket US, GET on `https://gateway.polymarket.us/v1`:
 - `/markets/{slug}/settlement` — settlement price
 - price history and search endpoints also exist; see docs.polymarket.us
 
-All three are keyless for reads. None of the above requires an account.
+All three are keyless for reads and none requires an account. **Being
+keyless is an engineering fact, not a permission.** Of the three, only Kalshi
+is cleared for scheduled capture, and only on ratified accepted risk.

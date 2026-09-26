@@ -13,6 +13,37 @@ position moved after it. Every legal claim below is sourced to a primary
 document with a date. I did not rely on memory, and I discarded several
 secondary and SEO sources that surfaced in search.
 
+
+> ## ⚠ SUPERSEDED IN PART — read this first (2026-09-26)
+>
+> **Doyle ruled on 2026-09-26: no standalone Polymarket collector on either
+> venue** — no tape, no bulk pulls, no scheduled capture, in any repo. Only
+> execution-incidental data (quotes and fills our own executor sees while
+> trading Polymarket US through its official API) may be stored, internally,
+> and only once we trade there. Permission requests are drafted in
+> `POLYMARKET_DATA_PERMISSION_REQUESTS.md`.
+>
+> Three things in this document were wrong, all mine:
+>
+> 1. **Q7 recommended capturing BOTH venues.** Both venues' terms bar the
+>    collection itself, not just publication. Offshore §4.2 bars scraping
+>    tools and needs written consent even for manual copying; Polymarket US
+>    §5 licenses data for "personal, non-commercial use" and bars "scraping,
+>    bulk downloads" unless expressly licensed. I recommended capture without
+>    having read either terms document.
+> 2. **I relied on golf's ratified "CLEAR" row for the offshore venue** and,
+>    asked for an independent check, reported "I read the row... I have no
+>    quarrel with it." I read the row, not the file it cites. That file is a
+>    1,585-byte navigation shell containing no terms text. The CFB session
+>    read the real 59,371-byte terms and found them prohibitive.
+> 3. **Q4's NFL depth figures were a lucky sub-sample.** I reported a
+>    0.75-cent touch and 0.80 cents of slippage at Probe. On NFL Sunday,
+>    2026-09-20, properly paginated and live, the numbers were a 7.95-cent
+>    touch and 4.51 cents at Probe. I corrected this in chat to Doyle that
+>    day and **did not commit it here**, so the wrong number propagated —
+>    it is the premise of the ruling's "NFL is the first candidate". Q4 and
+>    the Recommendation below are now corrected.
+
 ---
 
 ## The finding that reframes everything: there are two Polymarkets
@@ -229,7 +260,7 @@ measured volume-weighted slippage against the touch.
 Flat lines, format: league / tradeable books / mean touch spread / fill rate
 and slippage per tier.
 
-NFL / 36 books / touch spread 0.75 cents /
+NFL / 36 books / touch spread 0.75 cents / **SUPERSEDED — see below**
   Probe $200: 36/36 fillable, 0.80 cents slippage
   Core $600: 36/36 fillable, 6.14 cents slippage
   Scale $1,000: 36/36 fillable, 10.42 cents slippage
@@ -276,6 +307,32 @@ time), and whether NFL depth improves closer to kickoff. Both are worth a
 second pass during a live Sunday slate before any funding decision.
 
 ---
+
+### CORRECTION — live NFL Sunday, 2026-09-20, 2:50pm CT
+
+The NFL figures above came from a 36-book sample drawn from one unpaginated
+page. Re-measured live mid-slate, from the full paginated pool of 2,444
+pre-match NFL core markets, same method, same tier caps:
+
+Polymarket US NFL pre-match / 43 tradeable books / touch 7.95 cents /
+  Probe $200: 42/43 fillable, 4.51 cents slippage
+  Core $600: 42/43 fillable, 13.33 cents
+  Scale $1,000: 42/43 fillable, 18.19 cents
+
+Polymarket US NFL in-progress / 15 books / touch 4.10 cents /
+  Probe $200: 14/15, 18.15 cents — the quote narrows live while size vanishes
+
+Kalshi, same slate, for comparison:
+
+KXNFLGAME (moneyline) / 68.5M contracts traded, 43.1M open interest / touch 2.60 cents /
+  Probe 0.77 cents, Core 1.74, Scale 2.90 — all 100% fillable
+KXNFLTOTAL / touch 8.47 cents / Probe 1.72, Core 3.07, Scale 5.74
+KXNFLSPREAD / touch 10.40 cents / Probe 3.37, Core 8.51, Scale 13.27
+
+**Polymarket US loses to Kalshi at every tier on comparable markets, and
+Kalshi moneylines are in a different class entirely.** The "NFL at Probe
+size is genuinely competitive" conclusion below does not survive the
+corrected sample.
 
 ## Q5. Funding and custody — VENUE FLOAT, AND SLOW TO CONVERT BACK
 
@@ -373,7 +430,7 @@ That is not an argument against capturing offshore Polymarket — it is a deep,
 liquid market and a legitimate fair-value reference. It is an argument for
 labelling it correctly and never letting it price a bet. Recommendation:
 
-1. Capture BOTH, as distinct sources, never merged: `polymarket` (offshore,
+1. ~~Capture BOTH~~ **WITHDRAWN 2026-09-26 — both venues' terms bar collection; see banner.** Originally: capture both, as distinct sources, never merged: `polymarket` (offshore,
    reference only, `tradeable=False`) and `polymarket_us` (the DCM,
    potentially tradeable).
 2. Write a new shared adapter for `gateway.polymarket.us/v1` rather than
@@ -395,12 +452,12 @@ It is a CFTC-designated contract market, it lists every sport we model, its
 resolution model is rulebook-based with named league sources rather than an
 oracle, and its fees are at parity with Kalshi with a better maker rebate.
 
-**But depth, not legality, decides this, and depth says NFL at Probe size
-and nothing else.** NFL full-game markets fill a $200-to-win ticket at 0.80
-cents of slippage on a 0.75-cent touch, which is genuinely competitive. The
-same book costs 6.14 cents at Core and 10.42 at Scale. CFB carries 15,365
-pre-match markets at a 23-cent touch spread, which is listing breadth rather
-than tradeable breadth. On our unit sizes this is one sport, one tier, today.
+**Depth, not legality, decides this — and on the corrected live-Sunday
+sample, depth does not favour Polymarket US anywhere.** NFL pre-match costs
+4.51 cents at Probe and 18.19 at Scale against Kalshi's 0.77 and 2.90 on the
+same slate. CFB carries 15,365 pre-match markets at a 23-cent touch, which is
+listing breadth rather than tradeable breadth. There is no sport and no tier
+where Polymarket US beat Kalshi in anything I measured.
 
 I am **not** recommending funding it, for two different kinds of reason.
 
@@ -422,5 +479,7 @@ near kickoff, and check NBA and NHL once their seasons start. If NFL depth
 holds at Core size in-season this becomes interesting; if it does not, we
 have learned that cheaply with nothing at risk.
 
-Meanwhile the capture case is strong and separable from the trading case.
-The US venue's public gateway is keyless and the tape costs nothing to keep.
+~~Meanwhile the capture case is strong and separable from the trading case.~~
+**Withdrawn 2026-09-26.** Both venues' terms bar the collection itself. Under
+Doyle's ruling there is no capture case until a licence or written consent is
+granted; see `POLYMARKET_DATA_PERMISSION_REQUESTS.md`.
