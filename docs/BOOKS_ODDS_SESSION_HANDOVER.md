@@ -214,6 +214,44 @@ something looks wrong.
       the club's country against the competition's own country, derived
       from the competition's `espn_slug` so it cannot drift) and make the
       refusal loud.
+12. **Kalshi rate-limits by IP, and on the Mac mini every sport shares that
+    IP — so the sports rate-limit each other.** Found by the CFB session
+    2026-09-26 on a 53-game Saturday: a burst of paged reads drew HTTP 429
+    within a second. The shared client had no retry at all, so a 429 on any
+    page raised out of `_paged` and the whole series lost its pricing —
+    reported, not silent, but gone. Two things to keep in mind:
+    - **Retry the refused PAGE, not the series.** CFB's first fix restarted
+      from page one and still failed `KXNCAAFSPREAD`, because each restart
+      re-walked the pages that had already drawn the limit. Per-page retry
+      with 2/4/8/16s backoff pulled 2,458 spread and 1,831 total markets
+      through 62 429s. Now in the shared client (`_get_page`).
+    - **A failed read must never collapse into "empty".** A swallowed 429
+      publishes as "this series has no markets", which is a different and
+      false claim. An unclearable 429 still raises so the caller produces
+      `SourceReport(ok=False)`, and the note names the code explicitly
+      rather than trusting `str(e)` to carry it.
+
+---
+
+## 5a. Open handoff — NFL's private copy of `_paged` (2026-09-26)
+
+`nfl_prediction_model_2026/nfl_model/data/books/kalshi.py:48` carries its own
+`_paged`, byte-identical in shape to the pre-fix shared one: no 429 retry, no
+pacing, and it writes the cursor into the caller's own kwargs dict. It needs
+the same treatment. Two routes, NFL's session to choose:
+
+1. Import `_paged` from `predictium_odds.books.kalshi` and delete the local
+   copy. Cleanest, and it is why the shared layer exists.
+2. If the local copy exists for a reason I could not see, port `_get_page`,
+   `RETRY_BACKOFF`, `PAGE_PACING_SECONDS` and `_failure_note` across, plus
+   `predictium_odds/tests/test_kalshi_retry.py` — the mid-pagination test is
+   the one that matters, since it is what caught CFB's first fix being wrong.
+
+Also worth telling CFB: their local `_paged` wrapper in
+`college_football_model/data/books/kalshi.py` now double-wraps the shared
+one. Harmless (the inner call will not 429 twice) but redundant, and it means
+a future change to the shared backoff will not reach them. Deleting the local
+wrapper and importing the shared `_paged` is the tidy-up.
 
 ---
 
