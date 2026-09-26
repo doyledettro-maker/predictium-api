@@ -25,6 +25,7 @@ repos take toward stale/pulled book lines.
 from __future__ import annotations
 
 import re
+import time
 
 from predictium_odds.books.base import SportConfig, get_json, utcnow_iso
 from predictium_odds.health import SourceReport
@@ -35,23 +36,95 @@ BASE = "https://api.elections.kalshi.com/trade-api/v2"
 BOOK = "kalshi"
 MAX_SPREAD = 0.10  # yes_ask - yes_bid above this = too thin to quote
 
+# Retry on HTTP 429 only, PER PAGE, with the org's backoff (2, 4, 8, 16s).
+# Kalshi rate-limits by IP and the Mac mini runs every sport's pipeline from
+# one IP, so the sports rate-limit each other. Measured by the CFB session
+# 2026-09-26 on a 53-game Saturday: a burst of paged reads drew 429s within a
+# second, and retrying the WHOLE series from page one (their first version)
+# failed KXNCAAFSPREAD outright, because each restart re-walked the pages that
+# had already drawn the limit. Retrying only the page that was refused pulled
+# 2,458 spread and 1,831 total markets through 62 429s.
+#
+# Why this belongs here and not in base.get_json: the fix is pagination-aware
+# ("retry the refused page, not the series"), and Kalshi's limits are its own.
+# A blanket retry in get_json would change Bovada/FanDuel behaviour too.
+#
+# An unclearable 429 still RAISES, deliberately. The callers below turn that
+# into SourceReport(ok=False), which is what keeps a failed read
+# distinguishable from a genuinely empty market list — a 429 swallowed into
+# `[]` would publish as "this series has no markets", which is a different
+# and false claim. Any non-429 raises at once: a retry is for congestion,
+# not for a broken request.
+RETRY_BACKOFF = (2, 4, 8, 16)
+PAGE_PACING_SECONDS = 0.2
+MAX_PAGES = 50                # never loop forever on a bad cursor
+_sleep = time.sleep           # module-level so tests can stub the wait
+
+
+def _failure_note(series: str, e: Exception) -> str:
+    """Why a read failed, in a form an operator can act on.
+
+    Names the HTTP code explicitly rather than trusting `str(e)` to carry it.
+    urllib's HTTPError happens to stringify as "HTTP Error 429: ...", but a
+    wrapped or re-raised error need not, and a note reading "KXNCAAFGAME: "
+    tells whoever reads the health line nothing. Rate limiting is called out
+    by name because it is the one failure here that is expected, transient,
+    and already retried — so seeing it means the retries were exhausted.
+    """
+    code = getattr(e, "code", None)
+    if code == 429:
+        return (f"{series}: HTTP 429 rate limited, still refused after "
+                f"{len(RETRY_BACKOFF)} retries")
+    detail = str(e) or type(e).__name__
+    return f"{series}: HTTP {code} {detail}" if code else f"{series}: {detail}"
+
 
 def _get(path: str, **params):
     return get_json(f"{BASE}/{path}", params,
                     headers={"Accept": "application/json"})
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    return getattr(e, "code", None) == 429
+
+
+def _retry_after(e: Exception) -> float | None:
+    """The venue's own requested wait, if it sent one, else None."""
+    try:
+        return float((getattr(e, "headers", None) or {}).get("Retry-After"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_page(path: str, params: dict) -> dict:
+    """One page, retried on 429 only. Honours Retry-After over our backoff."""
+    for attempt, wait in enumerate((*RETRY_BACKOFF, None)):
+        try:
+            return _get(path, **params)
+        except Exception as e:   # re-raised below unless it is a 429
+            if wait is None or not _is_rate_limit(e):
+                raise
+            wait = _retry_after(e) or wait
+            print(f"kalshi: 429 on {params.get('series_ticker', path)}"
+                  f"{' (page cursor)' if params.get('cursor') else ''}, "
+                  f"retry {attempt + 1}/{len(RETRY_BACKOFF)} in {wait:.0f}s")
+            _sleep(wait)
+    raise RuntimeError("unreachable")
+
+
 def _paged(path: str, key: str, **params) -> list[dict]:
     out: list[dict] = []
     cursor = None
-    for _ in range(50):  # hard stop — never loop forever on a bad cursor
+    for _ in range(MAX_PAGES):
+        q = dict(params)          # per-page copy: never mutate the caller's
         if cursor:
-            params["cursor"] = cursor
-        data = _get(path, **params)
+            q["cursor"] = cursor
+        data = _get_page(path, q)
         out.extend(data.get(key, []))
         cursor = data.get("cursor")
         if not cursor:
             break
+        _sleep(PAGE_PACING_SECONDS)   # light pacing; we share the IP
     return out
 
 
@@ -87,7 +160,7 @@ def fetch_game_quotes(cfg: SportConfig, series_suffix: str = "GAME",
                          status="open", limit=1000)
     except Exception as e:  # noqa: BLE001
         return [], SourceReport(BOOK, cfg.sport, MARKET_MONEYLINE, 0, False,
-                                f"{series}: {e}")
+                                _failure_note(series, e))
 
     quotes: list[Quote] = []
     thin = 0
@@ -132,7 +205,7 @@ def fetch_ladders(cfg: SportConfig, series_suffix: str = "WINS",
                          status="open", limit=1000)
     except Exception as e:  # noqa: BLE001
         return {}, SourceReport(BOOK, cfg.sport, market_key, 0, False,
-                                f"{series}: {e}")
+                                _failure_note(series, e))
 
     ladders: dict[str, list[dict]] = {}
     unmapped: set[str] = set()

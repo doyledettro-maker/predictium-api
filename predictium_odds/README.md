@@ -56,6 +56,14 @@ this directory is the seed — split it out with history at that point.
    pattern, now shared).
 6. Keys/secrets: none of these adapters need any. If a future source does,
    it goes through GitHub Actions secrets / env — never committed.
+7. **A failed read is not an empty one.** Kalshi rate-limits by IP and the
+   Mac mini runs every sport from one IP, so a burst of paged reads draws
+   HTTP 429. `books.kalshi._get_page` retries the refused PAGE (not the
+   series) with 2/4/8/16s backoff, honours `Retry-After`, and paces pages.
+   An unclearable 429 still raises, deliberately: the caller turns it into
+   `SourceReport(ok=False)`, which is what keeps "the venue did not answer"
+   distinguishable from "the venue has no markets here". Never swallow a
+   429 into `[]`. Tests: `tests/test_kalshi_retry.py`.
 
 ## Integrating a repo (rollout pattern)
 
