@@ -170,9 +170,11 @@ Hello,
 I'm a funded, active Novig customer and I'd like to get something in
 writing rather than assume it.
 
-I run a private sports modelling operation. I use Novig prices for two
-internal purposes: calibrating my own models, and measuring my own
-execution quality against the market at the time I traded. I'd like your
+I run Predictium, a sports analytics business: we build probabilistic
+models for sports and sell access to their outputs by subscription. I also
+trade on Novig with my own capital. I use Novig prices for two internal
+purposes: calibrating our models, and measuring my own execution quality
+against the market at the time I traded. I'd like your
 written permission to collect and retain Novig market data for those
 purposes, at low request rates.
 
@@ -199,6 +201,11 @@ What I will not do:
 - I will not use it for anything other than internal modelling,
   calibration and my own post-trade analysis.
 
+To be straightforward about the commercial side: the models this would help
+calibrate are ones whose outputs we sell. Novig's data itself would never be
+shown or passed to anyone, but I don't want to describe this as purely
+private when a business sits behind it.
+
 I'm also open to the NBX API under whatever commercial terms you offer, if
 you would rather this sit under a data agreement than a permission letter.
 I'd want to understand pricing before committing, and if there is a tier
@@ -215,6 +222,14 @@ Thanks,
 Doyle Dettro
 [account identifier]
 ```
+
+**Corrected 2026-09-26.** The first version of this draft described us as
+"a private sports modelling operation" and never said the model outputs are
+sold. That omission would have made any permission we got unreliable: a yes
+granted on an incomplete description is void the day the counterparty learns
+the rest. The draft above now says it plainly. Same fix applied to the
+Polymarket drafts, where the terms turn explicitly on "non-commercial" use and
+on "financial technology companies".
 
 ## 5. What I recommend Doyle do
 
