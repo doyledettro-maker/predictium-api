@@ -163,7 +163,7 @@ For Doyle to send, edit or discard. Scoped narrowly and honestly: every
 claim in it is true of us today.
 
 ```text
-Subject: Request for written permission — internal market data access
+Subject: Request for written permission for internal market data access
 
 Hello,
 
@@ -181,14 +181,14 @@ purposes, at low request rates.
 What I'm asking to do:
 
 1. Read public market data (events, markets, order books) for the sports I
-   model, at a low polling rate — on the order of a few requests per minute
+   model, at a low polling rate, on the order of a few requests per minute
    per sport, far below the published NBX rate limits.
 2. Retain those observations in a private internal database, so that a
    price I saw at the time I traded can be reconstructed later for
    calibration and post-trade analysis.
-3. Confirm that my own account activity — my orders, fills, positions and
+3. Confirm that my own account activity, my orders, fills, positions and
    transaction history, which the NBX API exposes to me as the account
-   holder — is mine to retain and analyse without restriction.
+   holder, is mine to retain and analyse without restriction.
 
 What I will not do:
 

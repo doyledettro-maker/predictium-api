@@ -88,7 +88,7 @@ modelling operation" without saying the outputs are sold.
 ## Draft 1 — Polymarket US (QCX LLC): market-data licence
 
 ```text
-Subject: Market data licence enquiry — internal model evaluation
+Subject: Market data licence enquiry for internal model evaluation
 
 Hello,
 
@@ -137,7 +137,7 @@ Predictium
 ## Draft 2 — Polymarket offshore (Adventure One QSS Inc.): §4.2 written consent
 
 ```text
-Subject: Request for written consent under your Terms of Use — internal research
+Subject: Request for written consent under your Terms of Use for internal research
 
 Hello,
 
@@ -151,7 +151,7 @@ am not asking to.
 
 What I'm asking for: consent to read public market data from your gamma and
 CLOB endpoints at a low request rate and retain it privately, to evaluate
-our own models against the market — comparing our probabilities with where
+our own models against the market, comparing our probabilities with where
 Polymarket was priced at the same moment.
 
 Your terms bar data-gathering tools without written consent (section 4.2)
