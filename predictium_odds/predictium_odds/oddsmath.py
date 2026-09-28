@@ -125,42 +125,82 @@ def kelly_fraction(model_prob: float, odds: float | int,
 
 # ---------------------------------------------------------------------------
 # Fee-inclusive EV at an exchange ask (Doyle, 2026-09-27). One implementation
-# for every sport: tennis, WNBA, CFB, NFL and soccer all price Kalshi strikes
-# through this, so a fee or settlement change is made once.
+# for every sport: tennis, WNBA, CFB, NFL, soccer and golf all price Kalshi
+# strikes through this, so a fee or settlement change is made once.
 #
 # Settlement is the org's: to win 1 unit at price q, risk q / (1 - q). At an
 # exchange the price actually paid for a YES contract that pays $1 is the ask
 # PLUS the fee, so q here is the fee-inclusive cost, never the bare ask. The
 # de-vigged-price rule does not apply: an exchange ask carries no vig to
 # remove, only a fee to add.
+#
+# THE FEE COMES FROM THE SERIES, NEVER FROM A CONSTANT (Portfolio/Risk,
+# 2026-09-28, from golf spec 0038 §6). Kalshi's /series/{ticker} returns
+# `fee_type` and `fee_multiplier` per series; the caller reads them at capture
+# time (books.kalshi.fetch_series_fees) and passes them in. What is known, and
+# from where (docs/KALSHI_FEE_EVIDENCE.md has the captures):
+#
+# - fee_type enum, per Kalshi's API reference (docs.kalshi.com, get-series,
+#   read 2026-09-28): "quadratic" (General Trading Fees Table),
+#   "quadratic_with_maker_fees" (same table, plus maker fees),
+#   "quadratic_with_combo_maker_fees" (same, 0.5 maker multiplier instead of
+#   0.25), "flat" (Specific Trading Fees Table). All three quadratic types
+#   share the taker formula; they differ only in what MAKERS pay. We take.
+# - fee_multiplier: "a floating point multiplier applied to the fee
+#   calculations". Live values 2026-09-28 across all 14,399 series: 1, 0.5
+#   (every MLB game-day series) and 0 (14 non-sports series).
+# - The 0.07 base is NOT stated in any document we have read: the fee
+#   schedule PDF that carries the General Trading Fees Table answers HTTP
+#   429. It is corroborated, not quoted: Kalshi's fee-rounding page works an
+#   example of a 5.5c buy with "a model fee of $0.00363825", which is
+#   0.07 x 0.055 x 0.945 to the last digit.
+# - Rounding, per the same page: trade fee = ceil_6dp(model fee); a
+#   non-direct member's balance change is then aligned to the cent, and an
+#   order-level accumulator refunds the overpayment so the order converges on
+#   what one equivalent fill would cost.
+#
+# "flat", any fee type not listed above, and a missing or invalid multiplier
+# return None: no fee, and therefore no EV claim. Never the quadratic formula
+# by default.
 # ---------------------------------------------------------------------------
 
-KALSHI_TAKER_FEE_COEFF = 0.07
+KALSHI_GENERAL_FEE_COEFF = 0.07
+KALSHI_QUADRATIC_FEE_TYPES = frozenset({
+    "quadratic", "quadratic_with_maker_fees",
+    "quadratic_with_combo_maker_fees"})
 
 
-def exchange_fee(price: float, contracts: int = 1, *,
-                 coeff: float = KALSHI_TAKER_FEE_COEFF,
-                 round_up: bool = False) -> float:
-    """Taker fee in dollars on `contracts` contracts bought at `price`:
-    coeff * contracts * price * (1 - price).
+def _ceil_dp(x: float, dp: int) -> float:
+    """Round UP to `dp` decimals, immune to float noise below 1e-9 of a unit
+    (0.0175 * 100 is 1.7500000000000002, which is not a reason to add 1c)."""
+    scale = 10 ** dp
+    return math.ceil(round(x * scale, 9 - min(dp, 6))) / scale
 
-    round_up=True rounds the fee up to the next whole cent over the order.
-    With contracts=1 that is a per-contract round-up, the most conservative
-    reading (a 50c contract pays 2c, not 1.75c). How the venue rounds a given
-    order is its schedule's call, not ours; this helper takes the order size
-    so a caller can model whichever the venue applies. Returned as a total
-    for the order; divide by `contracts` for per-contract.
+
+def kalshi_taker_fee(ask: float, fee_type: str | None,
+                     fee_multiplier: float | None, contracts: int = 1,
+                     ) -> float | None:
+    """Kalshi taker fee in dollars for an order of `contracts` at `ask`, from
+    the series' own fee_type and fee_multiplier, or None if we cannot know it.
+
+    fee_multiplier x 0.07 x contracts x ask x (1 - ask), ceil to $0.000001
+    (Kalshi's trade-fee precision). Returns None for "flat", for any unknown
+    fee_type, and for a missing, non-finite or negative multiplier.
     """
-    if not 0.0 < price < 1.0:
-        raise ValueError(f"price must be in (0, 1), got {price}")
+    if not 0.0 < ask < 1.0:
+        raise ValueError(f"ask must be in (0, 1), got {ask}")
     if contracts < 1:
         raise ValueError(f"contracts must be >= 1, got {contracts}")
-    raw = coeff * contracts * price * (1.0 - price)
-    if round_up:
-        # round() first so 0.0175 * 100 = 1.7500000000000002 is not 2c by
-        # float noise alone, while any real fraction of a cent still rounds up
-        return math.ceil(round(raw * 100, 9)) / 100
-    return raw
+    if fee_type not in KALSHI_QUADRATIC_FEE_TYPES:
+        return None
+    try:
+        mult = float(fee_multiplier)          # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(mult) or mult < 0:
+        return None
+    raw = mult * KALSHI_GENERAL_FEE_COEFF * contracts * ask * (1.0 - ask)
+    return _ceil_dp(raw, 6)
 
 
 @dataclass(frozen=True)
@@ -184,7 +224,10 @@ class FeeInclusiveEV:
 
 def ev_at_ask(p: float, ask: float, fee_per_contract: float = 0.0,
               ) -> FeeInclusiveEV:
-    """EV at an executable ask plus a per-contract fee, venue-agnostic."""
+    """EV at an executable ask plus a KNOWN per-contract fee, venue-agnostic.
+
+    For Kalshi use kalshi_ev_at_ask, which derives the fee from the series
+    and refuses to price when it cannot."""
     if not 0.0 <= p <= 1.0:
         raise ValueError(f"model p must be in [0, 1], got {p}")
     if not 0.0 < ask < 1.0:
@@ -202,14 +245,29 @@ def ev_at_ask(p: float, ask: float, fee_per_contract: float = 0.0,
         ev_units=edge / (1.0 - cost))
 
 
-def kalshi_ev_at_ask(p: float, ask: float, *, contracts: int = 1,
-                     coeff: float = KALSHI_TAKER_FEE_COEFF,
-                     round_up: bool = False) -> FeeInclusiveEV:
-    """Fee-inclusive EV of buying Kalshi YES at `ask` with model prob `p`.
+def kalshi_ev_at_ask(p: float, ask: float, *, fee_type: str | None,
+                     fee_multiplier: float | None, contracts: int = 1,
+                     cent_aligned: bool = False) -> FeeInclusiveEV | None:
+    """Fee-inclusive EV of buying Kalshi YES at `ask` with model prob `p`,
+    or None when the series' fee cannot be determined (no EV claim).
 
-    To buy NO, pass p = 1 - p_yes and ask = the NO ask. The fee is the order
-    total from exchange_fee spread over `contracts`, so round_up with a
-    larger order shows the smaller per-contract drag of rounding once.
+    fee_type / fee_multiplier: the series' own values from /series/{ticker},
+    read at capture time. There is no default; pass what the venue said.
+
+    cent_aligned=True models a non-direct member (our account, via an FCM):
+    the order's balance change is aligned up to the cent, so the effective
+    cost per contract is ceil_cent(contracts x ask + fee) / contracts. With
+    contracts=1 that is the conservative single-fill cost; a larger order
+    pays the rounding once. False gives the exact model fee.
+
+    To buy NO pass p = 1 - p_yes and the NO ask.
     """
-    fee = exchange_fee(ask, contracts, coeff=coeff, round_up=round_up)
-    return ev_at_ask(p, ask, fee / contracts)
+    fee = kalshi_taker_fee(ask, fee_type, fee_multiplier, contracts)
+    if fee is None:
+        return None
+    if cent_aligned:
+        total = _ceil_dp(contracts * ask + fee, 2)
+        per_contract_fee = total / contracts - ask
+    else:
+        per_contract_fee = fee / contracts
+    return ev_at_ask(p, ask, max(per_contract_fee, 0.0))

@@ -117,6 +117,12 @@ not actually been read.
   a strike it cannot read (see Hard-won conventions). Scheduled ladder tape
   still passes each repo's own `terms_clearance.json` gate where it has one.
 
+  **Fees are read per series, never assumed** (2026-09-28). The fee
+  schedule PDF is behind a Vercel bot checkpoint and has been read by
+  nobody; the API reference and fee-rounding pages were read and are cited
+  in `KALSHI_FEE_EVIDENCE.md`, with the live fee_type survey. Every
+  captured contract carries its settlement rules verbatim.
+
 Bovada / **CLEAR on ratified accepted risk** / no scraping prohibition found,
 but the 539 KB ToS PDF's text was never extracted, so the absence is not
 fully established. Raw and book-attributed prices never publish.

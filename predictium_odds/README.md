@@ -73,8 +73,12 @@ this directory is the seed — split it out with history at that point.
    `lines.price_at_strike` returns the model's p at an offered strike from
    its published ladder, `None` off the grid (no interpolation; a continuous
    form, if the model publishes one, is used inside the grid only).
-   `oddsmath.kalshi_ev_at_ask` prices it at the ask plus the 0.07 × P × (1 −
-   P) fee and gives the to-win-1u risk at that fee-inclusive cost. Tests:
+   `oddsmath.kalshi_ev_at_ask` prices it at the ask plus the SERIES' fee
+   (`fee_multiplier` × 0.07 × P × (1 − P) for the quadratic fee types, read
+   from `/series/{ticker}` at capture) and gives the to-win-1u risk at that
+   fee-inclusive cost. An unknown fee type or missing multiplier returns None:
+   no EV claim, never a default. Every contract carries its settlement rules
+   verbatim. Evidence: `docs/KALSHI_FEE_EVIDENCE.md` in the repo root. Tests:
    `tests/test_ladders.py`.
 
 ## Integrating a repo (rollout pattern)
