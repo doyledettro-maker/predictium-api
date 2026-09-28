@@ -265,7 +265,11 @@ Relayed by Portfolio/Risk: every model must price prediction-market strikes
 that are not its book line, Novig x.5 lines and Kalshi "k+" or half-point
 ladders alike, from its own distribution, and settle at the traded strike.
 The shared pieces, one implementation each, in `predictium_odds` from tag
-**`odds-v0.2.0`** (pin that tag or a later SHA to use them):
+commit **`a0f26eb168f77a29a77cdea621c6162f1ca6a6b0`** (PR #7, version
+0.2.0). Pin that SHA or a later one to use them. The tag `odds-v0.2.0` is
+NOT minted yet: the cloud session's git proxy refuses tag pushes (HTTP 403),
+so it is Claudia's to create on that SHA. Until `git ls-remote --tags
+origin` shows it, pin the SHA, never the tag name:
 
 - **`books.kalshi.fetch_ladder(series, event_ticker=None, *, sport)`**
   returns every contract on the ladder as `LadderContract` (ticker, kind,
@@ -347,9 +351,9 @@ wrapper and importing the shared `_paged` is the tidy-up.
 
 **2026-09-28: both private copies can go once the pin bumps.** Every repo
 still pins `2da418a`, which predates the shared 429 retry (PR #3). From
-`odds-v0.2.0` the shared `_paged` carries the per-page retry, pacing and the
+`a0f26eb` (0.2.0) the shared `_paged` carries the per-page retry, pacing and the
 unmutated-kwargs fix, and `fetch_ladder` rides it. NFL (its ported copy from
-PR #77) and CFB (its wrapper) can each bump to `odds-v0.2.0`, import the
+PR #77) and CFB (its wrapper) can each bump to `a0f26eb`, import the
 shared `_paged`, and delete their own. Keep their retry tests pointed at
 whatever `_paged` they import, so the mid-pagination case stays covered.
 
