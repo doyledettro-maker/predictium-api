@@ -326,6 +326,17 @@ class LadderContract:
     subtitle: str
     strike_type: str
     floor_strike: float | None
+    # Settlement terms VERBATIM from the API (golf 0038 §7; push/void on
+    # half-point vs whole-number strikes everywhere). Never paraphrased,
+    # never inferred: a model that prices a tie-sensitive contract reads the
+    # payout rule from here. "" when the venue sent none.
+    rules_primary: str = ""
+    rules_secondary: str = ""
+    # The series' fee terms, read from /series/{ticker} in the same capture.
+    # None when that read failed or the venue omitted them, and then
+    # oddsmath.kalshi_ev_at_ask returns None: no fee, no EV claim.
+    fee_type: str | None = None
+    fee_multiplier: float | None = None
 
     @property
     def yes_means(self) -> str:
@@ -353,8 +364,12 @@ def _is_int(x: float) -> bool:
     return abs(x - round(x)) < 1e-9
 
 
-def parse_contract(m: dict, *, spread: bool) -> LadderContract:
-    """Normalise one /markets row. Raises StrikeParseError rather than guess."""
+def parse_contract(m: dict, *, spread: bool,
+                   fees: dict | None = None) -> LadderContract:
+    """Normalise one /markets row. Raises StrikeParseError rather than guess.
+
+    fees: the series' {"fee_type", "fee_multiplier"} from fetch_series_fees,
+    attached verbatim to the contract; None leaves them None."""
     ticker = m.get("ticker") or "?"
     stype = m.get("strike_type")
     floor = _num(m, "floor_strike")
@@ -366,7 +381,11 @@ def parse_contract(m: dict, *, spread: bool) -> LadderContract:
         "volume": _num(m, "volume_fp"),
         "open_interest": _num(m, "open_interest_fp"),
         "close_time": m.get("close_time"), "subtitle": sub,
-        "strike_type": stype or "", "floor_strike": floor}
+        "strike_type": stype or "", "floor_strike": floor,
+        "rules_primary": m.get("rules_primary") or "",
+        "rules_secondary": m.get("rules_secondary") or "",
+        "fee_type": (fees or {}).get("fee_type"),
+        "fee_multiplier": (fees or {}).get("fee_multiplier")}
 
     if stype == "structured":
         if spread:
@@ -416,6 +435,23 @@ def parse_contract(m: dict, *, spread: bool) -> LadderContract:
                           outcome=None, subject=subject, **common)
 
 
+def fetch_series_fees(series: str) -> dict | None:
+    """{"fee_type", "fee_multiplier"} for a series, verbatim, or None when the
+    read failed. Rides the per-page 429 retry. Values are passed through as
+    the venue sent them, unvalidated: oddsmath.kalshi_taker_fee decides what
+    it can price and returns None for the rest."""
+    try:
+        data = _get_page(f"series/{series}", {})
+    except Exception as e:  # noqa: BLE001
+        print(f"kalshi: series fee read failed, {_failure_note(series, e)}")
+        return None
+    sr = (data or {}).get("series") or {}
+    if "fee_type" not in sr and "fee_multiplier" not in sr:
+        return None
+    return {"fee_type": sr.get("fee_type"),
+            "fee_multiplier": sr.get("fee_multiplier")}
+
+
 def fetch_ladder(series: str, event_ticker: str | None = None, *,
                  sport: str, spread: bool | None = None, strict: bool = True,
                  status: str = "open",
@@ -439,6 +475,12 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
     the series name contains SPREAD. No liquidity filter is applied: a
     one-sided or wide contract is returned with its None sides so the caller
     sees the real book, and decides for itself what it will trade into.
+
+    Every contract carries its settlement rules verbatim (rules_primary,
+    rules_secondary) and the series' fee_type / fee_multiplier, read from
+    /series/{ticker} in the same call. A failed fee read does not fail the
+    capture: the contracts come back with None fees, the note says so, and
+    kalshi_ev_at_ask then refuses to claim EV on them.
     """
     if spread is None:
         spread = "SPREAD" in series.upper()
@@ -452,11 +494,12 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
         return None, SourceReport(BOOK, sport, market, 0, False,
                                   _failure_note(series, e))
 
+    fees = fetch_series_fees(series) if rows else None
     out: list[LadderContract] = []
     bad: list[str] = []
     for m in rows:
         try:
-            out.append(parse_contract(m, spread=spread))
+            out.append(parse_contract(m, spread=spread, fees=fees))
         except StrikeParseError:
             if strict:
                 raise
@@ -464,6 +507,11 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
     out.sort(key=lambda c: (c.event_ticker, c.team_code or "",
                             c.over_line if c.over_line is not None else 0.0,
                             c.outcome or ""))
-    note = (f"{len(bad)} unparseable strikes skipped: {bad[:5]}"
-            f"{' ...' if len(bad) > 5 else ''}") if bad else ""
-    return out, SourceReport(BOOK, sport, market, len(out), True, note)
+    parts = []
+    if bad:
+        parts.append(f"{len(bad)} unparseable strikes skipped: {bad[:5]}"
+                     f"{' ...' if len(bad) > 5 else ''}")
+    if rows and fees is None:
+        parts.append("series fee terms unread: no EV on these contracts")
+    return out, SourceReport(BOOK, sport, market, len(out), True,
+                             "; ".join(parts))

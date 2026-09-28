@@ -266,7 +266,9 @@ that are not its book line, Novig x.5 lines and Kalshi "k+" or half-point
 ladders alike, from its own distribution, and settle at the traded strike.
 The shared pieces, one implementation each, in `predictium_odds` from tag
 commit **`a0f26eb168f77a29a77cdea621c6162f1ca6a6b0`** (PR #7, version
-0.2.0). Pin that SHA or a later one to use them. The tag `odds-v0.2.0` is
+0.2.0), with the series-driven fee and verbatim rules text from 0.3.0 (PR
+#9). Pin the 0.3.0 merge SHA or later; 0.2.0's `kalshi_ev_at_ask` used a
+fixed 0.07 and must not be pinned for EV. The tag `odds-v0.2.0` is
 NOT minted yet: the cloud session's git proxy refuses tag pushes (HTTP 403),
 so it is Claudia's to create on that SHA. Until `git ls-remote --tags
 origin` shows it, pin the SHA, never the tag name:
@@ -280,14 +282,20 @@ origin` shows it, pin the SHA, never the tag name:
   (default) raises `StrikeParseError` on any strike it cannot read;
   `strict=False` skips those and names them in the note. No liquidity
   filter: one-sided contracts come back with `None` sides so the caller sees
-  the real book.
-- **`oddsmath.kalshi_ev_at_ask(p, ask, *, contracts=1, round_up=False)`**:
-  fee 0.07 x ask x (1 - ask) per contract, `round_up=True` rounds the order
-  total up to the cent (with contracts=1, the conservative per-contract
-  bound). Returns `FeeInclusiveEV`: cost = ask + fee, EV per contract,
-  `risk_to_win_1u` = cost / (1 - cost), `ev_units` = (p - cost) / (1 -
-  cost). Settlement at the traded strike books to win 1u at the
-  fee-inclusive cost. To buy NO pass p = 1 - p_yes and the NO ask.
+  the real book. Each contract also carries `rules_primary` /
+  `rules_secondary` VERBATIM (settlement terms: push, void, ties, scratches)
+  and the series' `fee_type` / `fee_multiplier` from the same capture.
+- **`oddsmath.kalshi_ev_at_ask(p, ask, *, fee_type, fee_multiplier,
+  contracts=1, cent_aligned=False)`** (0.3.0; supersedes 0.2.0's fixed
+  0.07): the fee comes from the SERIES' own `fee_type` and `fee_multiplier`,
+  read at capture time, never from a constant. `fee_multiplier x 0.07 x ask x
+  (1 - ask)` for the three quadratic types; `flat`, anything unknown, or a
+  missing multiplier returns None, meaning no EV claim. `cent_aligned=True`
+  models our non-direct balance rounding. Returns `FeeInclusiveEV`: cost =
+  ask + fee, EV per contract, `risk_to_win_1u` = cost / (1 - cost),
+  `ev_units` = (p - cost) / (1 - cost). To buy NO pass p = 1 - p_yes and the
+  NO ask. Sources, the live fee_type survey, and what is and is not read:
+  `docs/KALSHI_FEE_EVIDENCE.md`.
 - **`lines.price_at_strike(ladder, strike, *, continuous=None)`**: the
   model's own p at an offered strike from its published ladder
   `{over_line: p}`. On the grid, the grid's p. Off the grid, `None`,

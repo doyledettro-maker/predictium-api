@@ -24,8 +24,8 @@ from predictium_odds.lines import kplus_to_over_line, price_at_strike
 from predictium_odds.oddsmath import (
     FeeInclusiveEV,
     ev_at_ask,
-    exchange_fee,
     kalshi_ev_at_ask,
+    kalshi_taker_fee,
 )
 
 
@@ -144,11 +144,17 @@ class _HTTP(Exception):
 def pages(monkeypatch):
     monkeypatch.setattr(kalshi, "_sleep", lambda s: None)
     seen = []
+    series_reply = {"v": {"series": {"fee_type": "quadratic_with_maker_fees",
+                                     "fee_multiplier": 1}}}
 
     def install(*outcomes):
         it = iter(outcomes)
 
         def fake(path, **params):
+            if path.startswith("series/"):
+                if isinstance(series_reply["v"], Exception):
+                    raise series_reply["v"]
+                return series_reply["v"]
             seen.append(params)
             out = next(it)
             if isinstance(out, Exception):
@@ -156,6 +162,7 @@ def pages(monkeypatch):
             return {"markets": out}
         monkeypatch.setattr(kalshi, "_get", fake)
         return seen
+    install.series_reply = series_reply
     return install
 
 
@@ -207,46 +214,107 @@ def test_lenient_keeps_the_good_and_names_the_bad(pages):
     assert rep.ok and "1 unparseable" in rep.note and "KX-BAD-9" in rep.note
 
 
-# --- fee-inclusive EV -------------------------------------------------------
-
-def test_kalshi_fee_formula():
-    assert exchange_fee(0.50) == pytest.approx(0.0175)
-    assert exchange_fee(0.10) == pytest.approx(0.0063)
-    assert exchange_fee(0.50, 100) == pytest.approx(1.75)
-
-
-def test_round_up_per_contract_and_per_order():
-    assert exchange_fee(0.50, round_up=True) == 0.02
-    assert exchange_fee(0.50, 100, round_up=True) == 1.75   # exact cents
-    assert exchange_fee(0.50, 3, round_up=True) == 0.06     # 5.25c -> 6c
-    assert exchange_fee(0.01, round_up=True) == 0.01
+def test_rules_text_and_series_fees_ride_every_contract(pages):
+    row = dict(NFL_TOTAL, rules_primary="If more than 70.5 points are scored "
+               "... resolves to Yes.", rules_secondary="Overtime counts.")
+    pages([row])
+    got, rep = kalshi.fetch_ladder("KXNFLTOTAL", sport="nfl")
+    c = got[0]
+    assert c.rules_primary == row["rules_primary"]          # verbatim
+    assert c.rules_secondary == "Overtime counts."
+    assert (c.fee_type, c.fee_multiplier) == ("quadratic_with_maker_fees", 1)
+    assert rep.note == ""
 
 
-def test_ev_at_ask_includes_the_fee_in_the_price_paid():
-    ev = kalshi_ev_at_ask(0.60, 0.52)
+def test_a_failed_fee_read_keeps_the_capture_but_blocks_ev(pages):
+    install = pages
+    install([NFL_TOTAL])
+    install.series_reply["v"] = _HTTP(500)
+    got, rep = kalshi.fetch_ladder("KXNFLTOTAL", sport="nfl")
+    assert rep.ok and len(got) == 1
+    assert got[0].fee_type is None and "fee terms unread" in rep.note
+    assert kalshi_ev_at_ask(0.9, 0.4, fee_type=got[0].fee_type,
+                            fee_multiplier=got[0].fee_multiplier) is None
+
+
+def test_rules_default_to_empty_when_absent():
+    c = parse_contract(NFL_TOTAL, spread=False)
+    assert (c.rules_primary, c.rules_secondary) == ("", "")
+
+
+# --- fee-inclusive EV, from the series' own fee terms ----------------------
+
+Q, QM = "quadratic", "quadratic_with_maker_fees"
+
+
+def test_kalshi_worked_example_reproduces_to_the_cent():
+    """docs.kalshi.com fee-rounding page, 2026-09-28: a 5.5c buy with "a
+    model fee of $0.00363825"; trade fee $0.003639; balance -$0.06."""
+    assert kalshi_taker_fee(0.055, Q, 1) == pytest.approx(0.003639)
+    ev = kalshi_ev_at_ask(0.10, 0.055, fee_type=Q, fee_multiplier=1,
+                          cent_aligned=True)
+    assert ev.cost == pytest.approx(0.06)
+    assert ev.fee == pytest.approx(0.005)
+
+
+def test_the_multiplier_scales_the_general_formula():
+    assert kalshi_taker_fee(0.50, Q, 1) == pytest.approx(0.0175)
+    assert kalshi_taker_fee(0.50, QM, 0.5) == pytest.approx(0.00875)  # MLB
+    assert kalshi_taker_fee(0.50, Q, 0) == 0.0
+    assert kalshi_taker_fee(0.50, Q, 1, contracts=100) == pytest.approx(1.75)
+
+
+@pytest.mark.parametrize("fee_type", [Q, QM, "quadratic_with_combo_maker_fees"])
+def test_every_quadratic_type_shares_the_taker_formula(fee_type):
+    assert kalshi_taker_fee(0.30, fee_type, 1) == pytest.approx(0.0147)
+
+
+@pytest.mark.parametrize("fee_type,mult", [
+    ("flat", 1),                 # Specific Trading Fees Table: unread
+    ("linear", 1), ("", 1), (None, 1),
+    (Q, None), (Q, "one"), (Q, -1), (Q, float("nan")),
+])
+def test_an_unknown_fee_is_none_and_so_is_the_ev(fee_type, mult):
+    """Never the quadratic formula by default: no fee, no EV claim."""
+    assert kalshi_taker_fee(0.5, fee_type, mult) is None
+    assert kalshi_ev_at_ask(0.9, 0.5, fee_type=fee_type,
+                            fee_multiplier=mult) is None
+
+
+def test_ev_includes_the_fee_in_the_price_paid():
+    ev = kalshi_ev_at_ask(0.60, 0.52, fee_type=QM, fee_multiplier=1)
     fee = 0.07 * 0.52 * 0.48
-    assert ev.fee == pytest.approx(fee)
-    assert ev.cost == pytest.approx(0.52 + fee)
-    assert ev.ev_per_contract == pytest.approx(0.60 - 0.52 - fee)
+    assert ev.fee == pytest.approx(fee, abs=1e-6)
+    assert ev.cost == pytest.approx(0.52 + fee, abs=1e-6)
+    assert ev.ev_per_contract == pytest.approx(0.60 - 0.52 - fee, abs=1e-6)
     assert ev.breakeven == ev.cost
 
 
 def test_to_win_one_unit_risk_is_at_the_fee_inclusive_price():
-    ev = kalshi_ev_at_ask(0.60, 0.52, round_up=True)      # cost 0.54
+    ev = kalshi_ev_at_ask(0.60, 0.52, fee_type=QM, fee_multiplier=1,
+                          cent_aligned=True)                   # cost 0.54
     assert ev.cost == pytest.approx(0.54)
     assert ev.risk_to_win_1u == pytest.approx(0.54 / 0.46)
-    # expected units: win +1 with p, lose risk with 1-p
     assert ev.ev_units == pytest.approx(0.60 * 1 - 0.40 * (0.54 / 0.46))
 
 
 def test_a_fee_can_turn_a_bare_edge_negative():
     assert ev_at_ask(0.51, 0.50).ev_per_contract > 0
-    assert kalshi_ev_at_ask(0.51, 0.50).ev_per_contract < 0
+    assert kalshi_ev_at_ask(0.51, 0.50, fee_type=Q,
+                            fee_multiplier=1).ev_per_contract < 0
 
 
-def test_round_up_on_a_bigger_order_drags_less_per_contract():
-    one = kalshi_ev_at_ask(0.6, 0.5, round_up=True).fee
-    hundred = kalshi_ev_at_ask(0.6, 0.5, contracts=100, round_up=True).fee
+def test_the_mlb_half_multiplier_halves_the_drag():
+    full = kalshi_ev_at_ask(0.6, 0.5, fee_type=Q, fee_multiplier=1)
+    half = kalshi_ev_at_ask(0.6, 0.5, fee_type=Q, fee_multiplier=0.5)
+    assert half.fee == pytest.approx(full.fee / 2, abs=1e-6)
+
+
+def test_cent_alignment_is_paid_once_per_order():
+    one = kalshi_ev_at_ask(0.6, 0.5, fee_type=Q, fee_multiplier=1,
+                           cent_aligned=True).fee
+    hundred = kalshi_ev_at_ask(0.6, 0.5, fee_type=Q, fee_multiplier=1,
+                               contracts=100, cent_aligned=True).fee
     assert one == pytest.approx(0.02) and hundred == pytest.approx(0.0175)
 
 
@@ -259,7 +327,7 @@ def test_ev_at_ask_rejects_impossible_inputs(p, ask, fee):
 
 
 def test_fee_ev_is_a_frozen_record():
-    ev = kalshi_ev_at_ask(0.6, 0.5)
+    ev = kalshi_ev_at_ask(0.6, 0.5, fee_type=Q, fee_multiplier=1)
     assert isinstance(ev, FeeInclusiveEV)
     with pytest.raises(AttributeError):
         ev.p = 0.7  # type: ignore[misc]
@@ -310,5 +378,11 @@ def test_a_kalshi_rung_prices_end_to_end():
     """KXMLBKS '9+' at a 0.31 ask against a model that says 36% over 8.5."""
     c = parse_contract(MLB_KS, spread=False)
     p = price_at_strike({7.5: 0.52, 8.5: 0.36, 9.5: 0.23}, c.over_line)
-    ev = kalshi_ev_at_ask(p, 0.31)
+    ev = kalshi_ev_at_ask(p, 0.31, fee_type=c.fee_type,
+                          fee_multiplier=c.fee_multiplier)
+    assert ev is None                     # no series fee attached: no claim
+    c = parse_contract(MLB_KS, spread=False,
+                       fees={"fee_type": Q, "fee_multiplier": 0.5})
+    ev = kalshi_ev_at_ask(p, 0.31, fee_type=c.fee_type,
+                          fee_multiplier=c.fee_multiplier)
     assert p == 0.36 and ev.ev_per_contract > 0
