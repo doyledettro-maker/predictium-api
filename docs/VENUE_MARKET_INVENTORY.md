@@ -32,8 +32,9 @@ Polymarket at all) and `ODDS_INGESTION_COVERAGE_MATRIX.md` (all sources).
 
 ## Terms-clearance status per venue
 
-_Books & Odds owns this register. Updated 2026-09-26 on Doyle's Polymarket
-ruling. Standing precondition: a venue must be terms-cleared in writing, as a
+_Books & Odds owns this register. Updated 2026-09-28 on Doyle's
+strike-pricing ruling of 2026-09-27 (Kalshi and Novig rows below; Polymarket
+unchanged). Previously updated 2026-09-26 on the Polymarket ruling. Standing precondition: a venue must be terms-cleared in writing, as a
 committed document, before any scheduled capture of its data begins.
 **Check that a verdict's evidence is real** — read the file a row cites, not
 the row. A CLEAR resting on a page shell or a 429 has been read by nobody._
@@ -47,6 +48,18 @@ Service-derived content. The no-touch rule is about the account, not the
 terms: it is the one venue holding real money. Only exception: authenticated
 activity through our own funded account. Permission request drafted:
 `NOVIG_DATA_ACCESS_REQUEST.md`.
+
+  **Strike pricing, Doyle 2026-09-27: at execution time only, from our own
+  published ladder, no Novig tape.** When the executor, trading through our
+  own funded account, is looking at a Novig x.5 line, that strike is priced
+  from the model's published ladder (`predictium_odds.lines.price_at_strike`)
+  at that moment. Nothing about it changes the capture rules above: no
+  collector, no scheduled read, no stored Novig prices beyond the orders and
+  fills the account itself holds, and no session reads Novig to discover
+  which strikes to price. The strike arrives from the executor; the
+  probability comes from our ladder; a strike the ladder does not publish
+  gets no price (`None`), never a nearest-rung stand-in. The reason is still
+  the terms and the account, not a technical limit.
 
   **Found 2026-09-26 in NFL, safe by default but not safe by construction.**
   `nfl_prediction_model_2026/nfl_model/data/books/novig.py::fetch_quotes` is
@@ -84,10 +97,25 @@ organisation's data tape. Quotes and fills our own executor receives while
 trading through the official API may be stored internally, never public.
 Permission request drafted: `POLYMARKET_DATA_PERMISSION_REQUESTS.md`.
 
+  Both Polymarket rows are **unchanged by the 2026-09-27 strike-pricing
+  ruling.** It extends Kalshi ladder capture and Novig execution-time
+  pricing; it does not reopen the Saturday ruling on either Polymarket venue.
+
 Kalshi / **CLEAR on ratified accepted risk, not on a clean terms read** /
 CFTC-regulated exchange, documented public market-data API, Doyle-ratified;
 raw books do not publish. Its terms capture is a 429, so the terms text has
 not actually been read.
+
+  **Ladders in scope for every sport, Doyle 2026-09-27.** Every contract on a
+  spread, total, prop or win-total ladder may be captured under this
+  clearance, not only the contract aligned to the book main line, so each
+  model can price the strike actually offered from its own distribution and
+  settle at the traded strike. Same containment as every Kalshi read: raw
+  rows and Kalshi-attributed prices never reach a published artifact or the
+  public-read bucket. One client for it: `predictium_odds.books.kalshi.
+  fetch_ladder`, which parses every strike into one convention and raises on
+  a strike it cannot read (see Hard-won conventions). Scheduled ladder tape
+  still passes each repo's own `terms_clearance.json` gate where it has one.
 
 Bovada / **CLEAR on ratified accepted risk** / no scraping prohibition found,
 but the 539 KB ToS PDF's text was never extracted, so the absence is not
@@ -136,9 +164,29 @@ spread on every bet. Same rule as Kalshi's mid-versus-ask.
 Kalshi series naming is uniform: `KX{SPORT}{FAMILY}` where FAMILY is one of
 GAME, SPREAD, TOTAL, WINS, MATCH, BTTS. Kalshi's legacy integer price fields
 return null since ~2026-07; read `yes_bid_dollars` / `yes_ask_dollars` /
-`no_ask_dollars` (strings). `floor_strike` is ALREADY the half-point line
-for MLB pitcher props and soccer totals — applying a `N − 0.5` adjustment
-there double-adjusts. Check per series.
+`no_ask_dollars` (strings).
+
+Kalshi strikes, verified live 2026-09-28 by strict-parsing all 3,603 open
+contracts across 14 NFL, NCAAF, MLB, WNBA, EPL and ATP series (zero
+exceptions). The strike TYPE decides the line, never the habit of
+subtracting 0.5:
+
+- `greater` on a half-point floor F: YES = over F. The floor IS the line.
+  KXNFLTOTAL floor 70.5 "Over 70.5 points"; KXMLBKS floor 8.5 "9+";
+  KXNFLSPREAD floor 27.5 "LA Rams wins by over 27.5 points".
+- `greater_or_equal` on an integer N: YES = over N - 0.5. KXNFLWINS floor 9
+  "9+ wins". This is the only shape where "k+ = over k - 0.5" needs doing
+  by hand; on a `greater` contract Kalshi has already done it, and doing it
+  again prices the wrong rung.
+- `structured`: a named outcome with no strike (KX*GAME, KXATPMATCH, soccer
+  1X2 including "Tie").
+- Spread "TEAM wins by over X" (soccer: "more than X goals") is TEAM at -X,
+  negative = that team favoured; NO is the opponent at +X. The team is the
+  ticker suffix code (`-LAR28`), which each repo maps through its own
+  committed code table.
+- Anything else (a `greater` on an integer, a `>=` on a half-point,
+  `between`, `less`) raises `StrikeParseError`. A subtitle that disagrees
+  with the strike ("9+" on a 9.5 floor) also raises.
 
 Polymarket US market slugs are `{prefix}-{league}-{...}`: `aec-` for game
 markets, `tec-` for futures. Order books are read by SLUG, not id:

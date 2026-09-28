@@ -67,10 +67,10 @@ pinned SHA and the tag are the same commit, so nothing is mispinned today.
 | Module | Contents |
 |---|---|
 | `schema` | `Quote` — one priced side of one market from one source |
-| `oddsmath` | conversions + de-vig: multiplicative, proportional, **Shin** (ML), **power** (n-way futures) |
-| `lines` | `best_line`, `consensus`, **`align_main_line`** |
+| `oddsmath` | conversions + de-vig: multiplicative, proportional, **Shin** (ML), **power** (n-way futures); **`kalshi_ev_at_ask`** / `ev_at_ask` / `exchange_fee` (fee-inclusive EV, §5c) |
+| `lines` | `best_line`, `consensus`, **`align_main_line`**, **`price_at_strike`**, `kplus_to_over_line` (§5c) |
 | `health` | `SourceReport` / `CoverageSpec` / `evaluate` |
-| `books.*` | bovada, fanduel, kalshi, espn (DK lines), pinnacle |
+| `books.*` | bovada, fanduel, kalshi (incl. **`fetch_ladder`** / `parse_contract`, §5c), espn (DK lines), pinnacle |
 
 Note the layer is currently used for **health reporting everywhere** and
 **adapters in NBA only**. The other repos still run their own in-repo
@@ -166,6 +166,10 @@ something looks wrong.
    Integer book lines can push and have **no** binary equivalent — refuse
    them. For MLB pitcher props, `floor_strike` is *already* the half-point
    line (a "17+" contract carries 16.5) — don't double-adjust.
+   **Generalised 2026-09-28:** that is true of every `greater` contract
+   (spreads, totals, props across NFL/NCAAF/MLB/WNBA); only a
+   `greater_or_equal` integer strike (win totals) needs the -0.5. Read the
+   strike type, via `books.kalshi.parse_contract`, never the series name.
 3. **FanDuel restructures lobbies silently.** Season futures left the
    `customPageId` lobby and now live on per-team website pages
    (`/teams/_next/data/{buildId}/{sport}/{slug}/odds.json`). The build ID is
@@ -255,6 +259,45 @@ something looks wrong.
 
 ---
 
+## 5c. Strike pricing (Doyle, 2026-09-27) — standing
+
+Relayed by Portfolio/Risk: every model must price prediction-market strikes
+that are not its book line, Novig x.5 lines and Kalshi "k+" or half-point
+ladders alike, from its own distribution, and settle at the traded strike.
+The shared pieces, one implementation each, in `predictium_odds` from tag
+**`odds-v0.2.0`** (pin that tag or a later SHA to use them):
+
+- **`books.kalshi.fetch_ladder(series, event_ticker=None, *, sport)`**
+  returns every contract on the ladder as `LadderContract` (ticker, kind,
+  `over_line`, `team_code` + `spread_line` for spreads, outcome, yes/no
+  bid and ask, volume, open interest, close time) with a `SourceReport`.
+  Rides the per-page 429 retry. Three outcomes kept apart: contracts, `[]`
+  for a real empty, `None` + `ok=False` for a failed read. `strict=True`
+  (default) raises `StrikeParseError` on any strike it cannot read;
+  `strict=False` skips those and names them in the note. No liquidity
+  filter: one-sided contracts come back with `None` sides so the caller sees
+  the real book.
+- **`oddsmath.kalshi_ev_at_ask(p, ask, *, contracts=1, round_up=False)`**:
+  fee 0.07 x ask x (1 - ask) per contract, `round_up=True` rounds the order
+  total up to the cent (with contracts=1, the conservative per-contract
+  bound). Returns `FeeInclusiveEV`: cost = ask + fee, EV per contract,
+  `risk_to_win_1u` = cost / (1 - cost), `ev_units` = (p - cost) / (1 -
+  cost). Settlement at the traded strike books to win 1u at the
+  fee-inclusive cost. To buy NO pass p = 1 - p_yes and the NO ask.
+- **`lines.price_at_strike(ladder, strike, *, continuous=None)`**: the
+  model's own p at an offered strike from its published ladder
+  `{over_line: p}`. On the grid, the grid's p. Off the grid, `None`,
+  unless the model publishes a continuous form, which is used only inside
+  the grid's range. Never interpolated, never extrapolated: a straight
+  line between -2.5 and -3.5 smears the mass on 3 that separates them. A
+  model that wants a strike priced publishes that strike.
+
+Venue scope is in `VENUE_MARKET_INVENTORY.md`: Kalshi ladders in scope for
+every sport; Novig priced at execution time only, from the published
+ladder, no Novig tape; Polymarket unchanged.
+
+---
+
 ## 5b. Polymarket ruling (Doyle, 2026-09-26) — standing
 
 Option 1, relayed by Portfolio/Risk:
@@ -301,6 +344,14 @@ Also worth telling CFB: their local `_paged` wrapper in
 one. Harmless (the inner call will not 429 twice) but redundant, and it means
 a future change to the shared backoff will not reach them. Deleting the local
 wrapper and importing the shared `_paged` is the tidy-up.
+
+**2026-09-28: both private copies can go once the pin bumps.** Every repo
+still pins `2da418a`, which predates the shared 429 retry (PR #3). From
+`odds-v0.2.0` the shared `_paged` carries the per-page retry, pacing and the
+unmutated-kwargs fix, and `fetch_ladder` rides it. NFL (its ported copy from
+PR #77) and CFB (its wrapper) can each bump to `odds-v0.2.0`, import the
+shared `_paged`, and delete their own. Keep their retry tests pointed at
+whatever `_paged` they import, so the mid-pagination case stays covered.
 
 ---
 

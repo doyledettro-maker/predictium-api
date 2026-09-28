@@ -24,4 +24,4 @@ Rules encoded here (org invariants, do not weaken):
 
 from predictium_odds.schema import Quote  # noqa: F401
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
