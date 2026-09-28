@@ -12,6 +12,7 @@ Kalshi quotes carry no vig — never de-vig an exchange mid.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 
 def american_to_decimal(odds: float | int | None) -> float | None:
@@ -120,3 +121,95 @@ def kelly_fraction(model_prob: float, odds: float | int,
         return 0.0
     f = (model_prob * (b + 1) - 1) / b
     return max(0.0, f * multiplier)
+
+
+# ---------------------------------------------------------------------------
+# Fee-inclusive EV at an exchange ask (Doyle, 2026-09-27). One implementation
+# for every sport: tennis, WNBA, CFB, NFL and soccer all price Kalshi strikes
+# through this, so a fee or settlement change is made once.
+#
+# Settlement is the org's: to win 1 unit at price q, risk q / (1 - q). At an
+# exchange the price actually paid for a YES contract that pays $1 is the ask
+# PLUS the fee, so q here is the fee-inclusive cost, never the bare ask. The
+# de-vigged-price rule does not apply: an exchange ask carries no vig to
+# remove, only a fee to add.
+# ---------------------------------------------------------------------------
+
+KALSHI_TAKER_FEE_COEFF = 0.07
+
+
+def exchange_fee(price: float, contracts: int = 1, *,
+                 coeff: float = KALSHI_TAKER_FEE_COEFF,
+                 round_up: bool = False) -> float:
+    """Taker fee in dollars on `contracts` contracts bought at `price`:
+    coeff * contracts * price * (1 - price).
+
+    round_up=True rounds the fee up to the next whole cent over the order.
+    With contracts=1 that is a per-contract round-up, the most conservative
+    reading (a 50c contract pays 2c, not 1.75c). How the venue rounds a given
+    order is its schedule's call, not ours; this helper takes the order size
+    so a caller can model whichever the venue applies. Returned as a total
+    for the order; divide by `contracts` for per-contract.
+    """
+    if not 0.0 < price < 1.0:
+        raise ValueError(f"price must be in (0, 1), got {price}")
+    if contracts < 1:
+        raise ValueError(f"contracts must be >= 1, got {contracts}")
+    raw = coeff * contracts * price * (1.0 - price)
+    if round_up:
+        # round() first so 0.0175 * 100 = 1.7500000000000002 is not 2c by
+        # float noise alone, while any real fraction of a cent still rounds up
+        return math.ceil(round(raw * 100, 9)) / 100
+    return raw
+
+
+@dataclass(frozen=True)
+class FeeInclusiveEV:
+    """EV of buying one YES contract at `ask` when the model says `p`."""
+
+    p: float
+    ask: float
+    fee: float                # per contract, dollars
+    cost: float               # ask + fee: the price actually paid
+    ev_per_contract: float    # p - cost, dollars per $1 contract
+    ev_pct: float             # ev_per_contract / cost (return on cost)
+    risk_to_win_1u: float     # cost / (1 - cost): units risked to win 1u
+    ev_units: float           # expected units on a to-win-1u bet
+
+    @property
+    def breakeven(self) -> float:
+        """The model probability at which this trade is worth nothing."""
+        return self.cost
+
+
+def ev_at_ask(p: float, ask: float, fee_per_contract: float = 0.0,
+              ) -> FeeInclusiveEV:
+    """EV at an executable ask plus a per-contract fee, venue-agnostic."""
+    if not 0.0 <= p <= 1.0:
+        raise ValueError(f"model p must be in [0, 1], got {p}")
+    if not 0.0 < ask < 1.0:
+        raise ValueError(f"ask must be in (0, 1), got {ask}")
+    if fee_per_contract < 0:
+        raise ValueError("fee cannot be negative")
+    cost = ask + fee_per_contract
+    if cost >= 1.0:
+        raise ValueError(f"ask {ask} + fee {fee_per_contract} >= 1: "
+                         "the contract cannot pay out more than it costs")
+    edge = p - cost
+    return FeeInclusiveEV(
+        p=p, ask=ask, fee=fee_per_contract, cost=cost, ev_per_contract=edge,
+        ev_pct=edge / cost, risk_to_win_1u=cost / (1.0 - cost),
+        ev_units=edge / (1.0 - cost))
+
+
+def kalshi_ev_at_ask(p: float, ask: float, *, contracts: int = 1,
+                     coeff: float = KALSHI_TAKER_FEE_COEFF,
+                     round_up: bool = False) -> FeeInclusiveEV:
+    """Fee-inclusive EV of buying Kalshi YES at `ask` with model prob `p`.
+
+    To buy NO, pass p = 1 - p_yes and ask = the NO ask. The fee is the order
+    total from exchange_fee spread over `contracts`, so round_up with a
+    larger order shows the smaller per-contract drag of rounding once.
+    """
+    fee = exchange_fee(ask, contracts, coeff=coeff, round_up=round_up)
+    return ev_at_ask(p, ask, fee / contracts)

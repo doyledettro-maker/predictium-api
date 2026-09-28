@@ -20,12 +20,12 @@ this directory is the seed — split it out with history at that point.
 | Module | What |
 |---|---|
 | `schema` | `Quote` — one priced side of one market from one source |
-| `oddsmath` | conversions + de-vig: multiplicative, proportional, **Shin** (ML), **power** (n-way futures) — ported from the repos' canonical copies |
-| `lines` | `best_line` (shopping), `consensus` (median line, decimal-mean price), `align_main_line` (THE correctness rule — see below) |
+| `oddsmath` | conversions + de-vig: multiplicative, proportional, **Shin** (ML), **power** (n-way futures) — ported from the repos' canonical copies; fee-inclusive exchange EV (`kalshi_ev_at_ask`, rule 8) |
+| `lines` | `best_line` (shopping), `consensus` (median line, decimal-mean price), `align_main_line` (THE correctness rule — see below), `price_at_strike` (a model's p at an offered strike, rule 8) |
 | `health` | `SourceReport` / `CoverageSpec` / `evaluate` → summary line + warnings + all-required-down signal |
 | `books.bovada` | keyless public JSON; game lines + season win-total boards |
 | `books.fanduel` | sbapi + public `_ak`; game lines (lobbies restructure silently — that's what health reports are for) |
-| `books.kalshi` | keyless exchange market data; game quotes, strike ladders, `ladder_by_line` |
+| `books.kalshi` | keyless exchange market data; game quotes, >= win-total ladders (`fetch_ladders`, `ladder_by_line`), and every contract on any ladder (`fetch_ladder`, rule 8) |
 | `books.espn` | DraftKings lines via ESPN's public core API (`espn_dk`) |
 | `books.pinnacle` | guest API, **internal-only** (`redistributable=False`) |
 
@@ -64,6 +64,18 @@ this directory is the seed — split it out with history at that point.
    `SourceReport(ok=False)`, which is what keeps "the venue did not answer"
    distinguishable from "the venue has no markets here". Never swallow a
    429 into `[]`. Tests: `tests/test_kalshi_retry.py`.
+8. **Price the strike that is offered, from the model's own ladder, and
+   settle at it** (Doyle, 2026-09-27). `books.kalshi.fetch_ladder` returns
+   every contract with its strike normalised to an over line by strike TYPE:
+   a `greater` half-point floor IS the line, a `greater_or_equal` integer N
+   is over N − 0.5, spreads are team-oriented (negative = that team
+   favoured). An unreadable strike raises `StrikeParseError`, never a guess.
+   `lines.price_at_strike` returns the model's p at an offered strike from
+   its published ladder, `None` off the grid (no interpolation; a continuous
+   form, if the model publishes one, is used inside the grid only).
+   `oddsmath.kalshi_ev_at_ask` prices it at the ask plus the 0.07 × P × (1 −
+   P) fee and gives the to-win-1u risk at that fee-inclusive cost. Tests:
+   `tests/test_ladders.py`.
 
 ## Integrating a repo (rollout pattern)
 
