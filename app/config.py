@@ -5,6 +5,7 @@ All settings are loaded from environment variables.
 
 from functools import lru_cache
 from typing import List
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/predictium"
+    database_password: str = ""
 
     # AWS Cognito
     cognito_user_pool_id: str
@@ -75,6 +77,26 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         """Check if running in production environment."""
         return self.app_env.lower() == "production"
+
+    @property
+    def effective_database_url(self) -> str:
+        """Return the database URL, overlaying a managed secret password if present."""
+        if not self.database_password:
+            return self.database_url
+        parsed = urlsplit(self.database_url)
+        if parsed.username is None or parsed.hostname is None:
+            return self.database_url
+        username = quote(parsed.username, safe="")
+        password = quote(self.database_password, safe="")
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        netloc = f"{username}:{password}@{host}"
+        if parsed.port:
+            netloc = f"{netloc}:{parsed.port}"
+        return urlunsplit(
+            (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+        )
 
 
 @lru_cache()
