@@ -12,11 +12,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import insert
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.database import get_db
+from app.db.database import Base, engine, get_db
 from app.models.page_view import PageView
+from app.models.twitter_follower_snapshot import TwitterFollowerSnapshot
 from app.services import analytics_service
 
 logger = logging.getLogger(__name__)
@@ -108,12 +110,33 @@ async def ingest_twitter_followers(
     db: AsyncSession = Depends(get_db),
     _: None = Depends(require_analytics_key),
 ):
-    snapshot = await analytics_service.record_twitter_followers(
-        db,
-        followers=body.followers,
-        account=body.account,
-        source=body.source or "predictium-x-daily-engagement",
-    )
+    kwargs = dict(followers=body.followers, account=body.account,
+                  source=body.source or "predictium-x-daily-engagement")
+    try:
+        snapshot = await analytics_service.record_twitter_followers(db, **kwargs)
+    except ProgrammingError as e:
+        # The table is created at startup only when analytics is configured,
+        # and a failed startup just logs. Claudia's daily follower push got a
+        # bare 500 from 2026-10 on (Doyle wants this tracked), so heal here:
+        # create the table if it is missing and retry once.
+        await db.rollback()
+        logger.warning("twitter follower insert failed (%s); ensuring table", e.__class__.__name__)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all,
+                                tables=[TwitterFollowerSnapshot.__table__])
+        try:
+            snapshot = await analytics_service.record_twitter_followers(db, **kwargs)
+        except Exception as e2:  # noqa: BLE001
+            await db.rollback()
+            logger.exception("twitter follower insert failed after ensuring table")
+            raise HTTPException(status_code=500,
+                                detail=f"follower snapshot not stored: {e2.__class__.__name__}")
+    except Exception as e:  # noqa: BLE001
+        await db.rollback()
+        logger.exception("twitter follower insert failed")
+        # Name the failure so the caller can report it, never a bare 500.
+        raise HTTPException(status_code=500,
+                            detail=f"follower snapshot not stored: {e.__class__.__name__}")
     return {"accepted": 1, "snapshot": snapshot}
 
 
