@@ -46,7 +46,7 @@ def _engine_options(database_url: str) -> tuple[str, dict]:
     return clean_url, {}
 
 
-database_url, connect_args = _engine_options(settings.database_url)
+database_url, connect_args = _engine_options(settings.effective_database_url)
 
 # Create async engine
 engine = create_async_engine(
