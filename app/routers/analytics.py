@@ -5,6 +5,7 @@ Auth model: all endpoints are server-to-server, guarded by the shared
 secret header `X-Analytics-Key` (ANALYTICS_INGEST_KEY). The Next.js app
 holds the key server-side; browsers never see it.
 """
+import hmac
 import logging
 from datetime import date
 from typing import Optional
@@ -35,7 +36,7 @@ def require_analytics_key(x_analytics_key: Optional[str] = Header(None)) -> None
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Analytics is not configured (ANALYTICS_INGEST_KEY unset)",
         )
-    if x_analytics_key != settings.analytics_ingest_key:
+    if not hmac.compare_digest(x_analytics_key or "", settings.analytics_ingest_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid analytics key")
 
 
