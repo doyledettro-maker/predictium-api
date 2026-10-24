@@ -10,9 +10,9 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
 import httpx
+import jwt
 from cachetools import TTLCache
-from jose import JWTError, jwt
-from jose.exceptions import ExpiredSignatureError
+from jwt import ExpiredSignatureError, PyJWTError
 
 from app.config import get_settings
 
@@ -99,7 +99,7 @@ class CognitoService:
             
             logger.warning(f"No matching key found for kid: {kid}")
             return None
-        except JWTError as e:
+        except PyJWTError as e:
             logger.error(f"Error parsing token header: {e}")
             return None
 
@@ -128,37 +128,44 @@ class CognitoService:
             raise ValueError("Unable to find appropriate signing key")
         
         try:
-            # Verify and decode the token
+            # Verify and decode the token. The algorithm is pinned to the
+            # JWK's own RS256; the audience is checked below because Cognito
+            # puts it in different claims for ID and access tokens.
             claims = jwt.decode(
                 token,
-                signing_key,
+                jwt.PyJWK(signing_key, algorithm="RS256"),
                 algorithms=["RS256"],
-                audience=self.settings.cognito_client_id,
                 issuer=self.settings.cognito_issuer,
                 options={
                     "verify_signature": True,
-                    "verify_aud": True,
+                    "verify_aud": False,
                     "verify_iss": True,
                     "verify_exp": True,
-                    "require_exp": True,
-                    "require_sub": True,
+                    "require": ["exp", "iss", "sub", "token_use"],
                 },
             )
-            
-            # Validate token_use claim (should be "id" for ID tokens)
-            token_use = claims.get("token_use")
-            if token_use not in ("id", "access"):
-                raise ValueError(f"Invalid token_use: {token_use}")
-            
-            logger.debug(f"Successfully validated token for user: {claims.get('sub')}")
-            return claims
-            
         except ExpiredSignatureError:
             logger.warning("Token has expired")
             raise ValueError("Token has expired")
-        except JWTError as e:
+        except PyJWTError as e:
             logger.warning(f"JWT validation failed: {e}")
             raise ValueError(f"Token validation failed: {e}")
+
+        # ID tokens carry the app client in `aud`, access tokens in
+        # `client_id`. python-jose skipped the audience check when `aud` was
+        # absent, so an access token minted for any client of the pool passed.
+        token_use = claims.get("token_use")
+        if token_use == "id":
+            client = claims.get("aud")
+        elif token_use == "access":
+            client = claims.get("client_id")
+        else:
+            raise ValueError(f"Invalid token_use: {token_use}")
+        if client != self.settings.cognito_client_id:
+            raise ValueError("Token was not issued for this app client")
+
+        logger.debug(f"Successfully validated token for user: {claims.get('sub')}")
+        return claims
 
     async def get_user_info(self, token: str) -> Dict[str, str]:
         """
