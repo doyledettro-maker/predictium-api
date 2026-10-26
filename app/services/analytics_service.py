@@ -398,6 +398,16 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
         "twitter_followers": await _twitter_follower_summary(db, today),
         "daily_series": await _daily_series(db, today - timedelta(days=89), today),
         "top_pages": await _top_list(db, "path", "path", *window_30),
+        # Page views per first path segment ("nba", "tennis", "world-cup"),
+        # human traffic only, last 30 days. The site orders its sport menu
+        # by these (Predictium_Front_End /api/nav-order, Doyle 2026-10-26).
+        "top_sections": await _top_list(
+            db,
+            "COALESCE(NULLIF(lower(split_part(path, '/', 2)), ''), '(root)')",
+            "section",
+            *window_30,
+            limit=40,
+        ),
         "top_referrers": await _top_referrers(db, *window_30),
         "utm_sources": await _top_list(
             db, "utm_source", "utm_source", *window_30,
