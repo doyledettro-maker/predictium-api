@@ -82,6 +82,106 @@ async def _top_list(
     ]
 
 
+# First path segment -> sport label. Mirrors the frontend's SECTION_TO_SPORT
+# (Predictium_Front_End lib/sport-order.ts): NBA's tools live at the top level.
+SPORT_SECTIONS: dict[str, str] = {
+    "nba": "NBA",
+    "rapm": "NBA",
+    "minutes": "NBA",
+    "fantasy": "NBA",
+    "nfl": "NFL",
+    "cfb": "CFB",
+    "mlb": "MLB",
+    "tennis": "Tennis",
+    "wnba": "WNBA",
+    "soccer": "Soccer",
+    "golf": "Golf",
+    "world-cup": "World Cup",
+    "bubble-watch": "Markets",
+}
+OTHER_SPORT = "Other"
+
+SPORT_EXPR = (
+    "CASE lower(split_part(path, '/', 2)) "
+    + " ".join(f"WHEN '{seg}' THEN '{label}'" for seg, label in SPORT_SECTIONS.items())
+    + f" ELSE '{OTHER_SPORT}' END"
+)
+COUNTRY_EXPR = "COALESCE(NULLIF(country, ''), 'unknown')"
+HOME_COUNTRY = "US"
+
+
+def summarize_sport_countries(
+    rows: list[dict[str, Any]], top_n: int = 3
+) -> list[dict[str, Any]]:
+    """Fold (sport, country, views, visitors) rows into one entry per sport.
+
+    `rows` carry `country=None` for the sport total (its own distinct-visitor
+    count, which a sum over countries would overstate) and a country code for
+    each sport x country cell. Sports sort by views, "Other" last; inside each,
+    the top non-US countries by views.
+    """
+    by_sport: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        s = by_sport.setdefault(
+            r["sport"],
+            {"sport": r["sport"], "views": 0, "visitors": 0, "us_views": 0, "unknown_views": 0, "countries": []},
+        )
+        if r["country"] is None:
+            s["views"], s["visitors"] = int(r["views"]), int(r["visitors"])
+        elif r["country"] == HOME_COUNTRY:
+            s["us_views"] = int(r["views"])
+        elif r["country"] == "unknown":
+            # No geo header: not evidence of a reader abroad, so it counts
+            # toward neither side of the share.
+            s["unknown_views"] = int(r["views"])
+        else:
+            s["countries"].append(
+                {"country": r["country"], "views": int(r["views"]), "visitors": int(r["visitors"])}
+            )
+    out = []
+    for s in by_sport.values():
+        s["countries"] = sorted(s["countries"], key=lambda c: (-c["views"], c["country"]))[:top_n]
+        s["non_us_views"] = s["views"] - s["us_views"] - s["unknown_views"]
+        s["non_us_share"] = round(s["non_us_views"] / s["views"], 3) if s["views"] else 0.0
+        out.append(s)
+    return sorted(out, key=lambda s: (s["sport"] == OTHER_SPORT, -s["views"], s["sport"]))
+
+
+async def _sport_countries(db: AsyncSession, start: date, end: date) -> list[dict[str, Any]]:
+    """Human page views per sport, split by visitor country, for [start, end].
+
+    Tells us which sections actually earn readers outside the US (Doyle,
+    2026-11-03) before we spend on coverage aimed at them.
+    """
+    q = text(
+        f"""
+        SELECT {SPORT_EXPR} AS sport,
+               CASE WHEN GROUPING({COUNTRY_EXPR}) = 1 THEN NULL ELSE {COUNTRY_EXPR} END AS country,
+               COUNT(*) AS views,
+               COUNT(DISTINCT visitor_id) AS visitors
+        FROM page_views
+        WHERE {_local_date_expr()} BETWEEN :start AND :end AND NOT is_bot
+        GROUP BY GROUPING SETS (({SPORT_EXPR}), ({SPORT_EXPR}, {COUNTRY_EXPR}))
+        """
+    )
+    rows = (await db.execute(q, {"tz": TZ, "start": start, "end": end})).all()
+    return summarize_sport_countries(
+        [{"sport": r.sport, "country": r.country, "views": r.views, "visitors": r.visitors} for r in rows]
+    )
+
+
+def _top_countries_text(s: dict[str, Any]) -> str:
+    return ", ".join(f"{c['country']} {c['views']:,}" for c in s["countries"]) or "none"
+
+
+def _sport_country_line(s: dict[str, Any]) -> str:
+    """'Tennis: 1,204 views · 380 visitors · 31% outside US (top: GB 120, CA 88, AU 40)'."""
+    return (
+        f"{s['sport']}: {s['views']:,} views · {s['visitors']:,} visitors · "
+        f"{s['non_us_share'] * 100:.0f}% outside US (top: {_top_countries_text(s)})"
+    )
+
+
 # Normalize a referrer URL to its host in SQL (strip scheme, path, www.)
 REFERRER_HOST_EXPR = (
     "regexp_replace(regexp_replace(regexp_replace(referrer, '^https?://', ''), '/.*$', ''), '^www\\.', '')"
@@ -423,6 +523,7 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
         "countries": await _top_list(
             db, "COALESCE(country, '??')", "country", *window_30, limit=10
         ),
+        "sport_countries": await _sport_countries(db, *window_30),
         "domains": await _top_list(db, "COALESCE(domain, 'unknown')", "domain", *window_30, limit=5),
         "bots": {
             "today": await _bot_hits(db, today, today),
@@ -487,6 +588,9 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
             report_date,
             limit=10,
         ),
+        # Seven days, not one: a single day per sport per country is too
+        # thin to read.
+        "sport_countries_7d": await _sport_countries(db, week_ago, report_date),
         "bots": await _bot_hits(db, report_date, report_date, limit=10),
         "anomaly_signals": {
             "direct_one_page": day["direct_one_page"],
@@ -649,6 +753,14 @@ def render_report_html(report: dict[str, Any]) -> str:
         for c in report.get("countries", [])
     ) or "<tr><td style='padding:4px 12px' colspan='3'>No country data recorded</td></tr>"
 
+    sport_rows = "".join(
+        f"<tr><td style='padding:4px 12px'>{s['sport']}</td>"
+        f"<td style='padding:4px 12px;text-align:right'>{s['views']:,}</td>"
+        f"<td style='padding:4px 12px;text-align:right'>{s['non_us_share'] * 100:.0f}%</td>"
+        f"<td style='padding:4px 12px'>{_top_countries_text(s)}</td></tr>"
+        for s in report.get("sport_countries_7d", [])
+    ) or "<tr><td style='padding:4px 12px' colspan='4'>No page views recorded</td></tr>"
+
     th = "padding:6px 12px;text-align:left;border-bottom:1px solid #ddd"
     thr = "padding:6px 12px;text-align:right;border-bottom:1px solid #ddd"
 
@@ -685,6 +797,15 @@ def render_report_html(report: dict[str, Any]) -> str:
 
   <p style="margin:16px 0 4px"><b>Top countries</b></p>
   <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">{countries}</table>
+
+  <p style="margin:16px 0 4px"><b>By sport, last 7 days: share of views from outside the US</b></p>
+  <table style="border-collapse:collapse;width:100%;border:1px solid #ddd">
+    <tr style="background:#f5f5f5">
+      <th style="{th}">Sport</th><th style="{thr}">Views</th>
+      <th style="{thr}">Outside US</th><th style="{th}">Top other countries</th>
+    </tr>
+    {sport_rows}
+  </table>
 
   <p style="color:#999;font-size:12px;margin-top:20px">
     Full dashboard: <a href="https://www.predictium.ai/admin/traffic">predictium.ai/admin/traffic</a>
@@ -742,6 +863,9 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"  {i + 1}. {c['country']} — {c['views']} views · {c['visitors']} visitors"
         for i, c in enumerate(report.get("countries", [])[:5])
     ) or "  (no country data recorded)"
+    by_sport = "\n".join(
+        f"  {_sport_country_line(s)}" for s in report.get("sport_countries_7d", [])
+    ) or "  (no page views recorded)"
     views_chart = _render_slack_views_chart(report.get("daily_series_14d", []))
     follower_chart = _render_slack_follower_chart(report.get("twitter_followers_14d", []))
     follower_points = [p for p in report.get("twitter_followers_14d", []) if p.get("followers") is not None]
@@ -765,6 +889,7 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"*Top pages:*\n{pages}",
         f"*Top referrers:*\n{refs}",
         f"*Top countries:*\n{countries}",
+        f"*By sport, last 7 days (share of views from outside the US):*\n{by_sport}",
         "<https://www.predictium.ai/admin/traffic|Full dashboard →>",
     ]
     return {"text": "\n".join(text_lines)}
