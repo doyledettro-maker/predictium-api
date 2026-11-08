@@ -1,5 +1,6 @@
 """Prediction endpoints."""
 
+import logging
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -8,8 +9,10 @@ from app.dependencies import get_current_user, get_current_user_with_db
 from app.models.user import User
 from app.services.game_detail_serializer import serialize_game_detail
 from app.services.prediction_service import is_valid_game_id, prediction_service
+from app.services.response_guard import guard_response
 
 router = APIRouter(prefix="/predictions", tags=["Predictions"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/latest")
@@ -46,8 +49,16 @@ async def get_latest_predictions(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Predictions are currently unavailable",
         )
-    
-    return predictions
+
+    # latest.json is served as a passthrough, so the book guard is the only
+    # thing between a pipeline regression and the user: it drops book-keyed
+    # fields and book-naming strings from a copy (never the cached object)
+    # and logs what it removed, so a regression is visible, not silent.
+    clean, removed = guard_response(predictions)
+    if removed:
+        logger.warning("latest predictions: book guard removed %d fields: %s",
+                       len(removed), removed[:20])
+    return clean
 
 
 @router.get("/games/{game_id}")
