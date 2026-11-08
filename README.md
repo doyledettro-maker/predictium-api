@@ -106,6 +106,12 @@ psql -h localhost -U postgres -d predictium -f ../Predictium_Front_End/database/
 | GET | `/auth/me` | Current user info + subscription |
 | GET | `/predictions/latest` | Today/tomorrow predictions |
 | GET | `/predictions/games/{id}` | Game detail (plan-gated) |
+
+Prediction responses are built for display, not as a data feed. They never
+carry book-attributed prices or book names: book fields are removed, and any
+string field that would name a book is returned as `null`. Treat every string
+field as nullable. `/predictions/games/{id}` answers only the published id
+shape `AWY@HOM_YYYY-MM-DD`; anything else is a 404.
 | GET | `/billing/subscription` | Subscription status |
 | POST | `/billing/redeem-coupon` | Apply coupon code |
 | POST | `/billing/create-checkout-session` | Start Stripe checkout |

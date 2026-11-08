@@ -146,7 +146,8 @@ def _vetted_news(news: Any) -> Any:
     if not isinstance(news, dict):
         return news
     return {side: [item for item in items
-                   if isinstance(item, dict) and item.get("source") in PLAYER_NEWS_SOURCES]
+                   if isinstance(item, dict) and isinstance(item.get("source"), str)
+                   and item["source"] in PLAYER_NEWS_SOURCES]
             if isinstance(items, list) else items
             for side, items in news.items()}
 

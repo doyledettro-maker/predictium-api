@@ -53,7 +53,8 @@ async def get_latest_predictions(
     # latest.json is served as a passthrough, so the book guard is the only
     # thing between a pipeline regression and the user: it drops book-keyed
     # fields and book-naming strings from a copy (never the cached object)
-    # and logs what it removed, so a regression is visible, not silent.
+    # and logs what it removed with data in it, so a regression is visible
+    # (empty book fields, on every game today, are dropped without a log).
     clean, removed = guard_response(predictions)
     if removed:
         logger.warning("latest predictions: book guard removed %d fields: %s",

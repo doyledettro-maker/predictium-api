@@ -184,3 +184,71 @@ def test_guard_on_a_clean_object_changes_nothing():
     obj = {"meta": {"x": 1}, "games": [{"spread": -4.5, "note": "rest edge"}]}
     clean, removed = guard_response(copy.deepcopy(obj))
     assert clean == obj and removed == []
+
+
+# --- review round 2 (2026-11-08) --------------------------------------------
+
+LIVE_SHAPE = {"today": {"games": [{
+    "vegas": {"spread": 4.5, "total": 219.5, "market_source": "public_consensus",
+              "implied_prob_home_no_vig": 0.61, "books": {}},
+    "odds": {"current": {"consensus_spread": -4.5, "books": {}}},
+}]}}
+
+
+def test_empty_book_fields_drop_silently():
+    """Live latest.json carries books: {} on every game; that is not a
+    regression and must not be reported."""
+    clean, removed = guard_response(copy.deepcopy(LIVE_SHAPE))
+    game = clean["today"]["games"][0]
+    assert removed == []
+    assert "books" not in game["vegas"] and "books" not in game["odds"]["current"]
+    assert game["vegas"]["implied_prob_home_no_vig"] == 0.61   # de-vig, not Novig
+    assert game["vegas"]["market_source"] == "public_consensus"
+
+
+def test_live_shaped_latest_logs_nothing(monkeypatch, caplog):
+    s = PredictionService()
+    monkeypatch.setattr(s, "_get_s3_client", lambda: FakeS3({"latest.json": LIVE_SHAPE}))
+    monkeypatch.setattr(P, "prediction_service", s)
+    with caplog.at_level("WARNING"):
+        assert _client().get("/predictions/latest").status_code == 200
+    assert "book guard" not in caplog.text
+
+
+def test_a_non_empty_book_field_is_still_reported():
+    _, removed = strip_book_fields({"vegas": {"books": {"pinnacle": {"spread": -4.5}},
+                                              "source_book": "", "best_book": None}})
+    assert removed == ["/vegas/books"]
+
+
+@pytest.mark.parametrize("text", [
+    "Draft Kings has it -4", "per Fan Duel", "bet_365 moved", "FanDuel_DK feed",
+    "Hard Rock Bet line", "ESPN BET", "espn-dk", "William Hill", "BetOnline",
+    "Fanatics opened", "Betfair exchange", "Unibet", "SuperBook",
+])
+def test_name_variants_are_caught(text):
+    assert scrub_book_strings({"s": text})[0] == {"s": None}
+
+
+@pytest.mark.parametrize("text", [
+    "Novigrad", "pinnacles of form", "circa 2019", "no-vig price", "fan of the duel",
+])
+def test_ordinary_text_passes(text):
+    assert scrub_book_strings({"s": text})[0] == {"s": text}
+
+
+def test_key_variants_and_legit_de_vig_keys():
+    clean, removed = strip_book_fields({
+        "draft_kings_line": 1, "espn-bet": 2, "hardRockBet": 3, "novigPrice": 4,
+        "implied_prob_home_no_vig": 0.61, "impliedProbAwayNoVig": 0.39,
+        "kalshi_listed": True, "spread": -4.5})
+    assert clean == {"implied_prob_home_no_vig": 0.61, "impliedProbAwayNoVig": 0.39,
+                     "kalshi_listed": True, "spread": -4.5}
+    assert len(removed) == 4
+
+
+def test_a_non_string_news_source_is_never_served(monkeypatch):
+    monkeypatch.setattr(GDS, "PLAYER_NEWS_SOURCES", frozenset({"rotowire"}))
+    out = GDS._vetted_news({"home": [{"source": ["rotowire"]}, {"source": None},
+                                     {"source": "rotowire", "headline": "ok"}]})
+    assert out == {"home": [{"source": "rotowire", "headline": "ok"}]}
