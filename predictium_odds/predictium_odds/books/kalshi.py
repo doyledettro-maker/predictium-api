@@ -110,12 +110,21 @@ def _is_retryable(e: Exception) -> bool:
     return getattr(e, "code", None) in RETRY_STATUS
 
 
+MAX_RETRY_AFTER = 60.0         # seconds; a longer ask falls back to backoff
+
+
 def _retry_after(e: Exception) -> float | None:
-    """The venue's own requested wait, if it sent one, else None."""
+    """The venue's own requested wait, if it sent a usable one, else None.
+
+    Honoured only when 0 < value <= MAX_RETRY_AFTER. A negative value would
+    make time.sleep raise, and inf, nan or a huge value would stall the job,
+    so anything outside that range returns None and the caller falls back to
+    its own backoff (PR #19 review, 2026-11-09)."""
     try:
-        return float((getattr(e, "headers", None) or {}).get("Retry-After"))
+        v = float((getattr(e, "headers", None) or {}).get("Retry-After"))
     except (TypeError, ValueError):
         return None
+    return v if 0 < v <= MAX_RETRY_AFTER else None   # False for nan
 
 
 def _get_page(path: str, params: dict) -> dict:

@@ -239,3 +239,19 @@ def test_a_non_http_failure_still_names_something(monkeypatch, waits):
     _, report = kalshi.fetch_game_quotes(CFG)
     assert report.ok is False
     assert "TimeoutError" in report.note
+
+
+@pytest.mark.parametrize("raw", ["-5", "0", "inf", "-inf", "nan", "61", "1e9"])
+def test_an_unusable_retry_after_falls_back_to_our_backoff(monkeypatch, waits, raw):
+    """Negative would make time.sleep raise; inf, nan or huge would stall the
+    job. Only 0 < value <= 60 is honoured (PR #19 review)."""
+    _pages(monkeypatch, [_HTTP(503, retry_after=raw), []])
+    kalshi._paged("markets", "markets", series_ticker="KXNBAGAME")
+    assert waits == [2]
+
+
+@pytest.mark.parametrize("raw,expected", [("0.5", 0.5), ("60", 60.0)])
+def test_retry_after_inside_the_range_is_honoured(monkeypatch, waits, raw, expected):
+    _pages(monkeypatch, [_HTTP(429, retry_after=raw), []])
+    kalshi._paged("markets", "markets", series_ticker="KXNBAGAME")
+    assert waits == [expected]
