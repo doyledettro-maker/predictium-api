@@ -30,7 +30,8 @@ from __future__ import annotations
 import math
 import re
 import time
-from dataclasses import dataclass
+import urllib.parse
+from dataclasses import dataclass, replace
 
 from predictium_odds.books.base import SportConfig, get_json, utcnow_iso
 from predictium_odds.health import SourceReport
@@ -337,6 +338,21 @@ class LadderContract:
     # oddsmath.kalshi_ev_at_ask returns None: no fee, no EV claim.
     fee_type: str | None = None
     fee_multiplier: float | None = None
+    # 0.3.1 (NBA props capture brief, 2026-11-09). All optional, all None
+    # when the venue omits them: never inferred, never zero-filled.
+    # yes_bid_size / yes_ask_size: the market object's *_size_fp, verbatim.
+    # no_bid_size / no_ask_size: the order book only (with_sizes=True). Kalshi
+    # publishes bids on both sides and no asks: "a yes bid at 7c is the same
+    # as a no ask at 93c, with identical contract sizes" (docs.kalshi.com,
+    # Get Market Orderbook). So no_bid_size is the best NO bid level's size
+    # and no_ask_size the best YES bid level's size, by that equivalence.
+    yes_bid_size: float | None = None
+    yes_ask_size: float | None = None
+    no_bid_size: float | None = None
+    no_ask_size: float | None = None
+    last_price: float | None = None    # last trade, *_dollars convention
+    market_status: str | None = None   # venue `status`, verbatim
+    result: str | None = None          # venue `result`, verbatim ("" unsettled)
 
     @property
     def yes_means(self) -> str:
@@ -354,6 +370,12 @@ def _num(market: dict, field: str) -> float | None:
         return float(market.get(field))
     except (TypeError, ValueError):
         return None
+
+
+def _verbatim_str(market: dict, field: str) -> str | None:
+    """The venue's string as sent ("" included), or None if absent/not a str."""
+    v = market.get(field)
+    return v if isinstance(v, str) else None
 
 
 def _is_half(x: float) -> bool:
@@ -385,7 +407,14 @@ def parse_contract(m: dict, *, spread: bool,
         "rules_primary": m.get("rules_primary") or "",
         "rules_secondary": m.get("rules_secondary") or "",
         "fee_type": (fees or {}).get("fee_type"),
-        "fee_multiplier": (fees or {}).get("fee_multiplier")}
+        "fee_multiplier": (fees or {}).get("fee_multiplier"),
+        "yes_bid_size": _num(m, "yes_bid_size_fp"),
+        "yes_ask_size": _num(m, "yes_ask_size_fp"),
+        # Same convention as the quotes: a price outside (0, 1), "0.0000"
+        # for no trade yet, is no price.
+        "last_price": _dollars(m, "last_price"),
+        "market_status": _verbatim_str(m, "status"),
+        "result": _verbatim_str(m, "result")}
 
     if stype == "structured":
         if spread:
@@ -452,9 +481,81 @@ def fetch_series_fees(series: str) -> dict | None:
             "fee_multiplier": sr.get("fee_multiplier")}
 
 
+# The venue's own `status` filter values on GET /markets. Note the filter is
+# not the field: status="settled" returns markets whose `status` reads
+# "finalized" (observed 2026-11-09). None sends no filter at all.
+LADDER_STATUSES = ("open", "closed", "settled", None)
+ORDERBOOK_BATCH = 100          # GET /markets/orderbooks takes 1-100 tickers
+
+
+def _best_size(levels: object) -> float | None:
+    """Size at the best (highest-priced) bid level, or None for an empty or
+    malformed side. Levels arrive as [[price, size], ...] strings, listed
+    worst first, so the best is picked by price, never by position."""
+    best: tuple[float, float] | None = None
+    for lvl in levels if isinstance(levels, list) else []:
+        try:
+            price, size = float(lvl[0]), float(lvl[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if best is None or price > best[0]:
+            best = (price, size)
+    return best[1] if best else None
+
+
+def _fetch_book_sizes(tickers: list[str]) -> tuple[dict, list[str]]:
+    """{ticker: (yes_best_bid_size, no_best_bid_size)} from the batch order
+    book, plus failure notes. One read per ORDERBOOK_BATCH tickers, riding
+    the per-page 429 retry and pacing. A failed batch costs that batch's
+    sizes, never the capture.
+
+    The tickers go as REPEATED `tickers=` keys. A comma-joined value is
+    answered 200 with one empty book keyed by the joined string (observed
+    2026-11-09), which would read as "no size" on every contract."""
+    out: dict = {}
+    notes: list[str] = []
+    for i in range(0, len(tickers), ORDERBOOK_BATCH):
+        batch = tickers[i:i + ORDERBOOK_BATCH]
+        if i:
+            _sleep(PAGE_PACING_SECONDS)
+        query = urllib.parse.urlencode([("tickers", t) for t in batch])
+        try:
+            data = _get_page(f"markets/orderbooks?{query}", {})
+        except Exception as e:  # noqa: BLE001
+            notes.append(_failure_note(f"orderbooks[{len(batch)}]", e))
+            continue
+        for ob in (data or {}).get("orderbooks") or []:
+            book = (ob or {}).get("orderbook_fp") or {}
+            out[(ob or {}).get("ticker")] = (_best_size(book.get("yes_dollars")),
+                                             _best_size(book.get("no_dollars")))
+    return out, notes
+
+
+def _with_book_sizes(contracts: list[LadderContract],
+                     ) -> tuple[list[LadderContract], str]:
+    sizes, notes = _fetch_book_sizes([c.ticker for c in contracts])
+    filled = []
+    for c in contracts:
+        if c.ticker not in sizes:
+            filled.append(c)
+            continue
+        yes_bid_sz, no_bid_sz = sizes[c.ticker]
+        filled.append(replace(
+            c, no_bid_size=no_bid_sz, no_ask_size=yes_bid_sz,
+            # the market object's own sizes win; the book only fills a gap
+            yes_bid_size=c.yes_bid_size if c.yes_bid_size is not None else yes_bid_sz,
+            yes_ask_size=c.yes_ask_size if c.yes_ask_size is not None else no_bid_sz))
+    missing = sum(1 for c in contracts if c.ticker not in sizes)
+    note = ""
+    if notes or missing:
+        note = (f"order book sizes unread for {missing} of {len(contracts)} "
+                f"contracts" + (f" ({'; '.join(notes[:3])})" if notes else ""))
+    return filled, note
+
+
 def fetch_ladder(series: str, event_ticker: str | None = None, *,
                  sport: str, spread: bool | None = None, strict: bool = True,
-                 status: str = "open",
+                 status: str | None = "open", with_sizes: bool = False,
                  ) -> tuple[list[LadderContract] | None, SourceReport]:
     """Every contract on a Kalshi series (optionally one event), parsed.
 
@@ -481,10 +582,24 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
     /series/{ticker} in the same call. A failed fee read does not fail the
     capture: the contracts come back with None fees, the note says so, and
     kalshi_ev_at_ask then refuses to claim EV on them.
+
+    status: "open" (default), "closed", "settled", or None for no filter;
+    anything else raises ValueError before a request is made. with_sizes:
+    also read the batch order book (one request per 100 contracts) to fill
+    no_bid_size / no_ask_size; a failed size read leaves them None and says
+    so in the note, never failing the capture. The YES sizes come from the
+    market list and the NO sizes from the book: two reads seconds apart, so
+    on a live book they can disagree (2026-11-09: 7 of 62 NBA game markets
+    at the same price showed a different size between the two reads). Treat
+    them as two observations, not one snapshot.
     """
+    if status not in LADDER_STATUSES:
+        raise ValueError(f"status must be one of {LADDER_STATUSES}, got {status!r}")
     if spread is None:
         spread = "SPREAD" in series.upper()
-    params = {"series_ticker": series, "status": status, "limit": 1000}
+    params = {"series_ticker": series, "limit": 1000}
+    if status is not None:
+        params["status"] = status
     if event_ticker:
         params["event_ticker"] = event_ticker
     market = "ladder"
@@ -513,5 +628,47 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
                      f"{' ...' if len(bad) > 5 else ''}")
     if rows and fees is None:
         parts.append("series fee terms unread: no EV on these contracts")
+    if with_sizes and out:
+        out, size_note = _with_book_sizes(out)
+        if size_note:
+            parts.append(size_note)
     return out, SourceReport(BOOK, sport, market, len(out), True,
                              "; ".join(parts))
+
+
+def fetch_market(ticker: str, *, sport: str, spread: bool | None = None,
+                 ) -> tuple[LadderContract | None, SourceReport]:
+    """One market by ticker, for settlement polling. Same parse as
+    fetch_ladder, same three read outcomes, never merged:
+
+      capture    -> (contract, ok=True)
+      empty read -> (None, ok=True): the venue answered without a market
+      failed     -> (None, ok=False): no answer, or a strike that cannot be
+                    read; a ticker the venue reports NOT FOUND (HTTP 404) is
+                    a failed read with the reason named, never an empty one
+
+    Fee terms are a series read and are not made here (fee_type and
+    fee_multiplier stay None): use fetch_series_fees when pricing. `spread`
+    defaults to whether the ticker's series contains SPREAD. Capture scope
+    stays permanently decoupled from publication scope.
+    """
+    if spread is None:
+        spread = "SPREAD" in ticker.upper().split("-", 1)[0]
+    market = "market"
+    try:
+        data = _get_page(f"markets/{urllib.parse.quote(ticker, safe='')}", {})
+    except Exception as e:  # noqa: BLE001
+        if getattr(e, "code", None) == 404:
+            return None, SourceReport(BOOK, sport, market, 0, False,
+                                      f"{ticker}: HTTP 404 not found")
+        return None, SourceReport(BOOK, sport, market, 0, False,
+                                  _failure_note(ticker, e))
+    m = (data or {}).get("market")
+    if not m:
+        return None, SourceReport(BOOK, sport, market, 0, True,
+                                  f"{ticker}: venue answered without a market")
+    try:
+        contract = parse_contract(m, spread=spread)
+    except StrikeParseError as e:
+        return None, SourceReport(BOOK, sport, market, 0, False, str(e))
+    return contract, SourceReport(BOOK, sport, market, 1, True, "")

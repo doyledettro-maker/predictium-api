@@ -25,7 +25,7 @@ this directory is the seed — split it out with history at that point.
 | `health` | `SourceReport` / `CoverageSpec` / `evaluate` → summary line + warnings + all-required-down signal |
 | `books.bovada` | keyless public JSON; game lines + season win-total boards |
 | `books.fanduel` | sbapi + public `_ak`; game lines (lobbies restructure silently — that's what health reports are for) |
-| `books.kalshi` | keyless exchange market data; game quotes, >= win-total ladders (`fetch_ladders`, `ladder_by_line`), and every contract on any ladder (`fetch_ladder`, rule 8) |
+| `books.kalshi` | keyless exchange market data; game quotes, >= win-total ladders (`fetch_ladders`, `ladder_by_line`), every contract on any ladder (`fetch_ladder`, rule 8; `status` and `with_sizes` from 0.3.1), and one market by ticker (`fetch_market`, 0.3.1) |
 | `books.espn` | DraftKings lines via ESPN's public core API (`espn_dk`) |
 | `books.pinnacle` | guest API, **internal-only** (`redistributable=False`) |
 
