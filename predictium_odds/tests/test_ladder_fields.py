@@ -252,3 +252,56 @@ def test_fetch_market_an_unreadable_strike_is_failed(venue):
     answers["markets/"] = {"market": {**OPEN, "strike_type": "between", "floor_strike": 3}}
     c, rep = kalshi.fetch_market(OPEN["ticker"], sport="nba")
     assert c is None and not rep.ok and "unsupported strike" in rep.note
+
+
+# --- 0.3.2: 5xx retried on every _get_page path ---------------------------------
+
+def _flaky(fail_times, code, then):
+    """An answer that raises HTTP `code` `fail_times` times, then returns `then`."""
+    state = {"n": 0}
+
+    def answer(path, params):
+        state["n"] += 1
+        if state["n"] <= fail_times:
+            raise _HTTP(code)
+        return then
+    return answer, state
+
+
+def test_the_order_book_read_rides_the_5xx_retry(venue, monkeypatch):
+    waits = []
+    monkeypatch.setattr(kalshi, "_sleep", waits.append)
+    _, answers = venue
+    answers["markets"] = {"markets": [OPEN]}
+    book, state = _flaky(1, 503, {"orderbooks": [BOOK]})
+    answers["markets/orderbooks"] = book
+    got, rep = kalshi.fetch_ladder("KXNBAGAME", sport="nba", with_sizes=True)
+    assert state["n"] == 2 and 2 in waits
+    assert got[0].no_bid_size == 1.0 and rep.note == ""
+
+
+def test_fetch_market_rides_the_5xx_retry(venue, monkeypatch):
+    monkeypatch.setattr(kalshi, "_sleep", lambda s: None)
+    _, answers = venue
+    one, state = _flaky(2, 502, {"market": SETTLED})
+    answers["markets/"] = one
+    c, rep = kalshi.fetch_market(SETTLED["ticker"], sport="nba")
+    assert state["n"] == 3 and rep.ok and c.result == "no"
+
+
+def test_fetch_market_persistent_5xx_is_failed(venue, monkeypatch):
+    monkeypatch.setattr(kalshi, "_sleep", lambda s: None)
+    _, answers = venue
+    answers["markets/"] = _HTTP(504)
+    c, rep = kalshi.fetch_market("KXNBAGAME-X-Y", sport="nba")
+    assert c is None and not rep.ok and "HTTP 504 server error" in rep.note
+
+
+def test_fetch_market_404_is_not_retried(venue, monkeypatch):
+    waits = []
+    monkeypatch.setattr(kalshi, "_sleep", waits.append)
+    calls, answers = venue
+    answers["markets/"] = _HTTP(404)
+    c, rep = kalshi.fetch_market("KXNBAGAME-NOPE-XYZ", sport="nba")
+    assert c is None and not rep.ok and "404 not found" in rep.note
+    assert waits == [] and len(calls) == 1

@@ -2,6 +2,21 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.3.2 (2026-11-09)
+
+Kalshi reads now retry HTTP 500, 502, 503 and 504 exactly like 429: the same
+backoff (2, 4, 8, 16 s, then stop), the same cap, and `Retry-After` honoured.
+An unclearable 5xx still raises, so callers still report FAILED (`ok=False`),
+never an empty result, and the note reads `HTTP <code> server error, still
+failing after 4 retries`. `Retry-After` is honoured only when
+0 < value <= 60 s; a negative, `inf`, `nan` or larger value falls back to our
+backoff (a negative would make `time.sleep` raise; a huge one would stall
+the job). Every other 4xx still fails at once (a
+`fetch_market` 404 is not retried). It covers every read through
+`_get_page`: market pages, series fees, the batch order book and
+`fetch_market`. The NBA props capture brief asked for 1, 2, 4, 8, 16 s; this
+keeps the existing 2, 4, 8, 16 s schedule so 429 behaviour is unchanged.
+
 ## 0.3.1 (2026-11-09)
 
 Additive only: every existing caller and every existing test is unchanged.

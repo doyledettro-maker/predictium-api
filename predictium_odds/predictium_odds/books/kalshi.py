@@ -59,9 +59,17 @@ MAX_SPREAD = 0.10  # yes_ask - yes_bid above this = too thin to quote
 # into SourceReport(ok=False), which is what keeps a failed read
 # distinguishable from a genuinely empty market list — a 429 swallowed into
 # `[]` would publish as "this series has no markets", which is a different
-# and false claim. Any non-429 raises at once: a retry is for congestion,
-# not for a broken request.
+# and false claim. Any other error raises at once: a retry is for congestion
+# or a transient server fault, not for a broken request.
+#
+# 0.3.2 (2026-11-09, NBA props capture review): 500, 502, 503 and 504 are
+# retried exactly like 429, same backoff, same cap, same Retry-After rule. A
+# 5xx is the venue failing, not answering; an unclearable one still raises
+# and the caller still reports FAILED, never an empty result. Every other
+# 4xx (400, 401, 403, 404) still raises at once: fetch_market's 404 means
+# not found, and retrying it would only delay that answer.
 RETRY_BACKOFF = (2, 4, 8, 16)
+RETRY_STATUS = frozenset({429, 500, 502, 503, 504})
 PAGE_PACING_SECONDS = 0.2
 MAX_PAGES = 50                # never loop forever on a bad cursor
 _sleep = time.sleep           # module-level so tests can stub the wait
@@ -81,6 +89,9 @@ def _failure_note(series: str, e: Exception) -> str:
     if code == 429:
         return (f"{series}: HTTP 429 rate limited, still refused after "
                 f"{len(RETRY_BACKOFF)} retries")
+    if code in RETRY_STATUS:
+        return (f"{series}: HTTP {code} server error, still failing after "
+                f"{len(RETRY_BACKOFF)} retries")
     detail = str(e) or type(e).__name__
     return f"{series}: HTTP {code} {detail}" if code else f"{series}: {detail}"
 
@@ -94,24 +105,40 @@ def _is_rate_limit(e: Exception) -> bool:
     return getattr(e, "code", None) == 429
 
 
+def _is_retryable(e: Exception) -> bool:
+    """429 (congestion) or a transient 5xx; nothing else is retried."""
+    return getattr(e, "code", None) in RETRY_STATUS
+
+
+MAX_RETRY_AFTER = 60.0         # seconds; a longer ask falls back to backoff
+
+
 def _retry_after(e: Exception) -> float | None:
-    """The venue's own requested wait, if it sent one, else None."""
+    """The venue's own requested wait, if it sent a usable one, else None.
+
+    Honoured only when 0 < value <= MAX_RETRY_AFTER. A negative value would
+    make time.sleep raise, and inf, nan or a huge value would stall the job,
+    so anything outside that range returns None and the caller falls back to
+    its own backoff (PR #19 review, 2026-11-09)."""
     try:
-        return float((getattr(e, "headers", None) or {}).get("Retry-After"))
+        v = float((getattr(e, "headers", None) or {}).get("Retry-After"))
     except (TypeError, ValueError):
         return None
+    return v if 0 < v <= MAX_RETRY_AFTER else None   # False for nan
 
 
 def _get_page(path: str, params: dict) -> dict:
-    """One page, retried on 429 only. Honours Retry-After over our backoff."""
+    """One page, retried on 429 and 500/502/503/504 (RETRY_STATUS). Honours
+    Retry-After over our backoff."""
     for attempt, wait in enumerate((*RETRY_BACKOFF, None)):
         try:
             return _get(path, **params)
-        except Exception as e:   # re-raised below unless it is a 429
-            if wait is None or not _is_rate_limit(e):
+        except Exception as e:   # re-raised below unless it is retryable
+            if wait is None or not _is_retryable(e):
                 raise
             wait = _retry_after(e) or wait
-            print(f"kalshi: 429 on {params.get('series_ticker', path)}"
+            print(f"kalshi: HTTP {getattr(e, 'code', '?')} on "
+                  f"{params.get('series_ticker', path)}"
                   f"{' (page cursor)' if params.get('cursor') else ''}, "
                   f"retry {attempt + 1}/{len(RETRY_BACKOFF)} in {wait:.0f}s")
             _sleep(wait)
