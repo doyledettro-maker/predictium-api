@@ -100,11 +100,55 @@ def test_a_malformed_retry_after_falls_back_to_our_backoff(monkeypatch, waits):
     assert waits == [2]
 
 
-def test_any_other_error_is_raised_at_once(monkeypatch, waits):
-    _pages(monkeypatch, [_HTTP(500)])
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+def test_any_other_error_is_raised_at_once(monkeypatch, waits, code):
+    """A 4xx other than 429 is a broken request, not congestion. (Until
+    0.3.2 this test used a 500; 5xx are now retried, see below.)"""
+    _pages(monkeypatch, [_HTTP(code)])
     with pytest.raises(_HTTP):
         kalshi._paged("markets", "markets", series_ticker="KXNCAAFGAME")
-    assert waits == []                  # a retry is for congestion only
+    assert waits == []
+
+
+@pytest.mark.parametrize("code", [500, 502, 503, 504])
+def test_a_5xx_is_retried_with_backoff_then_succeeds(monkeypatch, waits, code):
+    calls = _pages(monkeypatch, [_HTTP(code), _HTTP(code), [{"ticker": "X"}]])
+    assert kalshi._paged("markets", "markets",
+                         series_ticker="KXNBAGAME") == [{"ticker": "X"}]
+    assert waits == [2, 4]
+    assert calls["n"] == 3
+
+
+def test_a_5xx_mid_pagination_retries_that_page_not_the_series(monkeypatch, waits):
+    calls = _pages(monkeypatch, [{"markets": [{"t": 1}], "cursor": "c2"},
+                                 _HTTP(503), {"markets": [{"t": 2}]}])
+    out = kalshi._paged("markets", "markets", series_ticker="KXNBAPTS")
+    assert [m["t"] for m in out] == [1, 2]
+    assert [p.get("cursor") for p in calls["params"]] == [None, "c2", "c2"]
+
+
+def test_retry_after_is_honoured_on_a_503(monkeypatch, waits):
+    _pages(monkeypatch, [_HTTP(503, retry_after="5"), []])
+    kalshi._paged("markets", "markets", series_ticker="KXNBAGAME")
+    assert waits == [5.0]
+
+
+def test_a_persistent_5xx_ends_failed_not_empty(monkeypatch, waits):
+    """Retries exhausted: the caller reports FAILED (ok=False), never an
+    empty result, and the note names the code."""
+    _pages(monkeypatch, [_HTTP(502)] * 6)
+    quotes, report = kalshi.fetch_game_quotes(CFG)
+    assert quotes == [] and report.ok is False
+    assert waits == list(kalshi.RETRY_BACKOFF)
+    assert "HTTP 502 server error" in report.note
+    assert report.note.rstrip().endswith("retries")
+
+
+def test_mixed_429_and_5xx_share_one_backoff_and_cap(monkeypatch, waits):
+    _pages(monkeypatch, [_HTTP(429), _HTTP(500), _HTTP(503), _HTTP(429), _HTTP(504)])
+    with pytest.raises(_HTTP):
+        kalshi._paged("markets", "markets", series_ticker="KXNBAGAME")
+    assert waits == list(kalshi.RETRY_BACKOFF)
 
 
 def test_a_429_that_never_clears_still_raises(monkeypatch, waits):
