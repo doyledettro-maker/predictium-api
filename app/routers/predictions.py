@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.dependencies import get_current_user, get_current_user_with_db
 from app.models.user import User
-from app.services.prediction_service import prediction_service
+from app.services.game_detail_serializer import serialize_game_detail
+from app.services.prediction_service import is_valid_game_id, prediction_service
 
 router = APIRouter(prefix="/predictions", tags=["Predictions"])
 
@@ -77,10 +78,11 @@ async def get_game_detail(
         HTTPException(404): If game not found.
         HTTPException(403): If user lacks required plan for detailed data.
     """
-    # Log access for auditing
+    # Log access for auditing. A refused id is logged as a quoted, truncated
+    # repr so it cannot inject lines into the audit log.
     prediction_service.log_prediction_access(
         user_id=str(user.id),
-        game_id=game_id,
+        game_id=game_id if is_valid_game_id(game_id) else f"invalid:{game_id[:64]!r}",
         endpoint="game_detail",
     )
     
@@ -92,31 +94,8 @@ async def get_game_detail(
             detail=f"Game not found: {game_id}",
         )
     
-    # Filter data based on subscription plan
-    # Premium users get everything; free users get basic predictions only
-    if not user.subscription or not user.subscription.has_premium_access:
-        game_detail = _filter_for_free_tier(game_detail)
-    
-    return game_detail
-
-
-def _filter_for_free_tier(data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Filter game detail data for free tier users.
-    
-    Free tier gets basic predictions only — no player impact,
-    no scenario analysis, no prediction history.
-    """
-    return {
-        "prediction_id": data.get("prediction_id"),
-        "game_id": data.get("game_id"),
-        "prediction_timestamp": data.get("prediction_timestamp"),
-        "teams": data.get("teams"),
-        "predictions": {
-            "final_spread": data.get("predictions", {}).get("final_spread"),
-            "final_total": data.get("predictions", {}).get("final_total"),
-            "final_home_win_prob": data.get("predictions", {}).get("final_home_win_prob"),
-            "confidence": data.get("predictions", {}).get("confidence"),
-        },
-        "context": data.get("context"),
-    }
+    # Every response is built from an allowlist (game_detail_serializer):
+    # premium users get the model detail, free users the basic prediction,
+    # and neither ever gets a market line, a book or a field nobody named.
+    premium = bool(user.subscription and user.subscription.has_premium_access)
+    return serialize_game_detail(game_detail, premium=premium)

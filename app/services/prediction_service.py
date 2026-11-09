@@ -7,6 +7,7 @@ Caches predictions in memory with automatic refresh.
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import unquote
@@ -18,6 +19,19 @@ from cachetools import TTLCache
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# The only game id this API serves: "AWY@HOM_YYYY-MM-DD", away first, as the
+# NBA publisher writes it. Anything else is refused BEFORE an S3 key is built,
+# because the read below is credentialed and the bucket holds other objects
+# under game_details/ that are not this API's to serve. fullmatch, not
+# match + "$" (which accepts a trailing newline), and [0-9], not \d (which
+# accepts non-ASCII digits).
+GAME_ID_RE = re.compile(r"[A-Z]{2,3}@[A-Z]{2,3}_[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def is_valid_game_id(game_id: Any) -> bool:
+    """True only for an id in the published "AWY@HOM_YYYY-MM-DD" shape."""
+    return isinstance(game_id, str) and GAME_ID_RE.fullmatch(game_id) is not None
 
 
 class PredictionService:
@@ -131,18 +145,22 @@ class PredictionService:
         """
         # URL-decode the game_id in case it's encoded (e.g., %40 -> @)
         decoded_game_id = unquote(game_id)
-        
+
+        # Refuse anything that is not a published game id before touching the
+        # cache or S3. The caller answers None with the same 404 as a game
+        # that does not exist, so a refused id is indistinguishable from a
+        # missing one.
+        if not is_valid_game_id(decoded_game_id):
+            return None
+
         cache_key = f"game:{decoded_game_id}"
-        
+
         # Check cache first
         if cache_key in self._cache:
             return self._cache[cache_key]
-        
-        # Sanitize game_id to prevent path traversal
-        safe_game_id = decoded_game_id.replace("/", "_").replace("\\", "_").replace("..", "_")
-        
-        # Fetch from S3
-        data = await self._read_s3_object(f"game_details/{safe_game_id}.json")
+
+        # Fetch from S3 (the id is validated, so it cannot carry a path)
+        data = await self._read_s3_object(f"game_details/{decoded_game_id}.json")
         
         if data:
             self._cache[cache_key] = data
