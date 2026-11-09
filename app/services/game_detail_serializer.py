@@ -23,7 +23,20 @@ Dropped on purpose, and why:
 - `feature_snapshot_ids`, `move_log_ref`: internal references.
 """
 
+import logging
 from typing import Any, Dict
+
+from app.services.response_guard import guard_response
+
+logger = logging.getLogger(__name__)
+
+# player_news carries third-party text (headline, blurb) under a named
+# `source`. An item is served only if its source is listed here, and an item
+# with no source is never served: provenance unknown. EMPTY until licensing
+# and attribution terms are confirmed for each source (PR #15 review,
+# follow-up 2). Add a source here only with that confirmation on record;
+# never add one because a payload started carrying it.
+PLAYER_NEWS_SOURCES: frozenset = frozenset()
 
 # A leaf: kept only if it is a JSON scalar. A dict or list where a scalar is
 # expected is dropped (None), so a reshaped field cannot smuggle a subtree.
@@ -129,6 +142,24 @@ def _project(value: Any, schema: Any) -> Any:
     return {key: _project(value[key], sub) for key, sub in schema.items() if key in value}
 
 
+def _vetted_news(news: Any) -> Any:
+    if not isinstance(news, dict):
+        return news
+    return {side: [item for item in items
+                   if isinstance(item, dict) and isinstance(item.get("source"), str)
+                   and item["source"] in PLAYER_NEWS_SOURCES]
+            if isinstance(items, list) else items
+            for side, items in news.items()}
+
+
 def serialize_game_detail(data: Dict[str, Any], *, premium: bool) -> Dict[str, Any]:
-    """The game detail a user may see, built from the allowlist for their tier."""
-    return _project(data, PREMIUM_SCHEMA if premium else FREE_TIER_SCHEMA) or {}
+    """The game detail a user may see, built from the allowlist for their tier,
+    then passed through the book guard as a backstop."""
+    out = _project(data, PREMIUM_SCHEMA if premium else FREE_TIER_SCHEMA) or {}
+    if "player_news" in out:
+        out["player_news"] = _vetted_news(out["player_news"])
+    clean, removed = guard_response(out)
+    if removed:
+        logger.warning("game detail %s: book guard removed %s",
+                       data.get("game_id"), removed[:20])
+    return clean
