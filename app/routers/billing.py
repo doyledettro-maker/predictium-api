@@ -2,13 +2,14 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.billing_catalog import PLANS, PRODUCTS, is_founder, plan_products, price_id_for
 from app.config import get_settings
 from app.db.database import get_db
 from app.dependencies import get_current_user_with_db, get_subscription
@@ -22,23 +23,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing", tags=["Billing"])
 settings = get_settings()
 
-PLAN_PRICE_MAP = {
-    "pro_weekly": settings.stripe_weekly_price_id,
-    "pro_monthly": settings.stripe_monthly_price_id,
-    "pro_season": settings.stripe_season_price_id,
-    "data_api": settings.stripe_data_api_price_id,
-}
-
-# Plans that use one-time payment mode instead of subscription
-ONE_TIME_PLANS = {"pro_season"}
-
-# Plans eligible for free trial
-TRIAL_ELIGIBLE_PLANS = {"pro_weekly", "pro_monthly"}
-
 
 class SubscriptionResponse(BaseModel):
     """Response model for subscription info."""
-    
+
     plan: str
     status: str
     is_active: bool
@@ -46,6 +34,23 @@ class SubscriptionResponse(BaseModel):
     trial_ends_at: Optional[datetime] = None
     current_period_end: Optional[datetime] = None
     stripe_customer_id: Optional[str] = None
+    # Added 2026-11-13 (paid launch). `entitlements` are products ("pro",
+    # "tennis"), never plan names, so the frontend gates on what was bought.
+    entitlements: List[str] = []
+    founder: bool = False
+    interval: Optional[str] = None
+
+
+class EntitlementsResponse(BaseModel):
+    """What the user may read right now. The frontend's claims routes call
+    this with the user's own token before any signed read of paid data."""
+
+    products: List[str]
+    paid: bool
+    plan: str
+    status: str
+    founder: bool
+    current_period_end: Optional[datetime] = None
 
 
 class RedeemCouponRequest(BaseModel):
@@ -64,35 +69,37 @@ class RedeemCouponResponse(BaseModel):
 
 
 class CheckoutSessionRequest(BaseModel):
-    """Request model for creating a checkout session."""
+    """Request model for creating a checkout session.
 
-    plan: str  # "pro_weekly", "pro_monthly", "pro_season", "data_api"
-    success_url: str
-    cancel_url: str
-    trial_days: Optional[int] = None
+    Only the plan comes from the client. The price, the success and cancel
+    URLs and any founder discount are decided here.
+    """
+
+    plan: str  # a key of app.billing_catalog.PLANS
 
 
 class CheckoutSessionResponse(BaseModel):
     """Response model for checkout session."""
-    
-    checkout_url: str
 
-
-class PortalSessionRequest(BaseModel):
-    """Request model for creating a portal session."""
-    
-    return_url: str
+    url: str
+    checkout_url: str  # same value; kept for older callers
 
 
 class PortalSessionResponse(BaseModel):
     """Response model for portal session."""
-    
-    portal_url: str
+
+    url: str
+    portal_url: str  # same value; kept for older callers
+
+
+def _interval(plan: str) -> Optional[str]:
+    return PLANS[plan].interval if plan in PLANS else None
 
 
 @router.get("/subscription", response_model=SubscriptionResponse)
 async def get_user_subscription(
     subscription: Subscription = Depends(get_subscription),
+    user: User = Depends(get_current_user_with_db),
 ) -> Dict[str, Any]:
     """
     Get the current user's subscription status.
@@ -110,6 +117,34 @@ async def get_user_subscription(
         "trial_ends_at": subscription.trial_ends_at,
         "current_period_end": subscription.current_period_end,
         "stripe_customer_id": subscription.stripe_customer_id,
+        "entitlements": sorted(subscription.entitlements),
+        "founder": is_founder(user.created_at, settings),
+        "interval": _interval(subscription.plan),
+    }
+
+
+@router.get("/entitlements", response_model=EntitlementsResponse)
+async def get_entitlements(
+    user: User = Depends(get_current_user_with_db),
+    db: AsyncSession = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    The paid products the current user may read right now.
+
+    Requires authentication. A user with no subscription row has none. The
+    frontend never decides access from a plan name: it asks for a product.
+    """
+    subscription = (
+        await db.execute(select(Subscription).where(Subscription.user_id == user.id))
+    ).scalar_one_or_none()
+    products = sorted(subscription.entitlements) if subscription else []
+    return {
+        "products": [p for p in PRODUCTS if p in products],
+        "paid": bool(products),
+        "plan": subscription.plan if subscription else "free",
+        "status": subscription.status if subscription else "none",
+        "founder": is_founder(user.created_at, settings),
+        "current_period_end": subscription.current_period_end if subscription else None,
     }
 
 
@@ -227,114 +262,78 @@ async def create_checkout_session(
     db: AsyncSession = Depends(get_db),
 ) -> Dict[str, str]:
     """
-    Create a Stripe checkout session for subscription purchase.
-    
-    Creates or retrieves the Stripe customer for the user,
-    then creates a checkout session for the selected plan.
-    
-    Requires authentication.
-    
-    Args:
-        request: CheckoutSessionRequest with plan and URLs.
-        
-    Returns:
-        CheckoutSessionResponse with checkout URL.
-        
+    Create a Stripe Checkout Session for a catalog plan.
+
+    Requires authentication. The client sends only `plan`; the price comes
+    from configuration, the success and cancel URLs are built from
+    `FRONTEND_URL`, and a founder's FOUNDER50 coupon is attached here.
+
     Raises:
-        HTTPException(400): If plan is invalid.
+        HTTPException(400): unknown plan.
+        HTTPException(409): the user already holds a paid subscription
+            (plan changes go through the customer portal, so nobody is
+            billed twice).
+        HTTPException(503): the plan's price is not configured.
     """
-    # Validate plan
-    if request.plan not in PLAN_PRICE_MAP:
+    if request.plan not in PLANS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid plan. Must be one of: {', '.join(PLAN_PRICE_MAP.keys())}",
+            detail=f"Invalid plan. Must be one of: {', '.join(PLANS)}",
         )
-
-    # Get price ID for plan
-    price_id = PLAN_PRICE_MAP[request.plan]
-
+    price_id = price_id_for(request.plan, settings)
     if not price_id:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Stripe price ID not configured for this plan",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="This plan is not on sale yet",
         )
 
-    # Determine checkout mode
-    mode = "payment" if request.plan in ONE_TIME_PLANS else "subscription"
-
-    # Determine trial days (only for eligible subscription plans)
-    trial_days = None
-    if request.trial_days and request.plan in TRIAL_ELIGIBLE_PLANS:
-        trial_days = request.trial_days
-
-    logger.info(f"Creating checkout for plan={request.plan}, mode={mode}, trial_days={trial_days}")
-
-    # Get or create subscription record
-    result = await db.execute(
-        select(Subscription).where(Subscription.user_id == user.id)
-    )
-    subscription = result.scalar_one_or_none()
-
-    if not subscription:
-        subscription = Subscription(user_id=user.id)
+    subscription = (
+        await db.execute(select(Subscription).where(Subscription.user_id == user.id))
+    ).scalar_one_or_none()
+    if subscription is None:
+        subscription = Subscription(user_id=user.id, plan="free", status="active")
         db.add(subscription)
         await db.flush()
+    elif subscription.stripe_subscription_id and plan_products(subscription.plan) and subscription.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You already have a subscription. Change plans from Manage Subscription.",
+        )
 
-    # Get or create Stripe customer
     if not subscription.stripe_customer_id:
-        customer_id = await stripe_service.create_customer(
+        subscription.stripe_customer_id = await stripe_service.create_customer(
             email=user.email,
             user_id=str(user.id),
         )
-        subscription.stripe_customer_id = customer_id
         await db.commit()
-    else:
-        customer_id = subscription.stripe_customer_id
 
-    # Create checkout session
-    checkout_url = await stripe_service.create_checkout_session(
-        customer_id=customer_id,
+    url = await stripe_service.create_checkout_session(
+        customer_id=subscription.stripe_customer_id,
         price_id=price_id,
-        success_url=request.success_url,
-        cancel_url=request.cancel_url,
-        mode=mode,
-        trial_days=trial_days,
+        plan_id=request.plan,
+        user_id=str(user.id),
+        founder=is_founder(user.created_at, settings),
     )
-
-    return {"checkout_url": checkout_url}
+    logger.info(f"Checkout created for plan={request.plan}")
+    return {"url": url, "checkout_url": url}
 
 
 @router.post("/create-portal-session", response_model=PortalSessionResponse)
 async def create_portal_session(
-    request: PortalSessionRequest,
     subscription: Subscription = Depends(get_subscription),
 ) -> Dict[str, str]:
     """
-    Create a Stripe customer portal session.
-    
-    Allows the user to manage their subscription,
-    update payment methods, and view invoices.
-    
-    Requires authentication and an existing Stripe customer.
-    
-    Args:
-        request: PortalSessionRequest with return URL.
-        
-    Returns:
-        PortalSessionResponse with portal URL.
-        
+    Create a Stripe Customer Portal session (change plan, update card,
+    invoices, cancel). It returns to /billing on our own site; the client
+    sends no URL, and any body it sends is ignored.
+
     Raises:
-        HTTPException(400): If user has no Stripe customer ID.
+        HTTPException(400): the user has no Stripe customer yet.
     """
     if not subscription.stripe_customer_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No Stripe customer found. Please subscribe first.",
         )
-    
-    portal_url = await stripe_service.create_portal_session(
-        customer_id=subscription.stripe_customer_id,
-        return_url=request.return_url,
-    )
-    
-    return {"portal_url": portal_url}
+    url = await stripe_service.create_portal_session(customer_id=subscription.stripe_customer_id)
+    return {"url": url, "portal_url": url}
