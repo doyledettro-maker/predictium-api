@@ -30,17 +30,21 @@ class Plan:
     products: FrozenSet[str]
     interval: str  # "month" | "year"
     price_setting: str  # the Settings attribute holding its Stripe price id
+    # Doyle's price (2026-11-13), in US cents. Stripe holds the real price;
+    # this is what `app.launch_check` verifies the configured price charges.
+    # Founders pay half through FOUNDER50.
+    amount_cents: int
 
 
 PLANS: Dict[str, Plan] = {
     p.id: p
     for p in (
-        Plan("pro_monthly", frozenset({PRODUCT_PRO}), "month", "stripe_pro_monthly_price_id"),
-        Plan("pro_annual", frozenset({PRODUCT_PRO}), "year", "stripe_pro_annual_price_id"),
-        Plan("tennis_monthly", frozenset({PRODUCT_TENNIS}), "month", "stripe_tennis_monthly_price_id"),
-        Plan("tennis_annual", frozenset({PRODUCT_TENNIS}), "year", "stripe_tennis_annual_price_id"),
-        Plan("bundle_monthly", frozenset({PRODUCT_PRO, PRODUCT_TENNIS}), "month", "stripe_bundle_monthly_price_id"),
-        Plan("bundle_annual", frozenset({PRODUCT_PRO, PRODUCT_TENNIS}), "year", "stripe_bundle_annual_price_id"),
+        Plan("pro_monthly", frozenset({PRODUCT_PRO}), "month", "stripe_pro_monthly_price_id", 1499),
+        Plan("pro_annual", frozenset({PRODUCT_PRO}), "year", "stripe_pro_annual_price_id", 11999),
+        Plan("tennis_monthly", frozenset({PRODUCT_TENNIS}), "month", "stripe_tennis_monthly_price_id", 3999),
+        Plan("tennis_annual", frozenset({PRODUCT_TENNIS}), "year", "stripe_tennis_annual_price_id", 34999),
+        Plan("bundle_monthly", frozenset({PRODUCT_PRO, PRODUCT_TENNIS}), "month", "stripe_bundle_monthly_price_id", 4499),
+        Plan("bundle_annual", frozenset({PRODUCT_PRO, PRODUCT_TENNIS}), "year", "stripe_bundle_annual_price_id", 39999),
     )
 }
 

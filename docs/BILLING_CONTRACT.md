@@ -11,14 +11,22 @@ Everything here runs in Stripe **TEST** mode until Doyle's word. Merging this re
 
 ## Catalog (`app/billing_catalog.py`)
 
-| plan | products | interval | price setting |
-|---|---|---|---|
-| `pro_monthly` | pro | month | `STRIPE_PRO_MONTHLY_PRICE_ID` |
-| `pro_annual` | pro | year | `STRIPE_PRO_ANNUAL_PRICE_ID` |
-| `tennis_monthly` | tennis | month | `STRIPE_TENNIS_MONTHLY_PRICE_ID` |
-| `tennis_annual` | tennis | year | `STRIPE_TENNIS_ANNUAL_PRICE_ID` |
-| `bundle_monthly` | pro, tennis | month | `STRIPE_BUNDLE_MONTHLY_PRICE_ID` |
-| `bundle_annual` | pro, tennis | year | `STRIPE_BUNDLE_ANNUAL_PRICE_ID` |
+Prices are Doyle's, ruled 2026-11-13. Founders pay half through FOUNDER50.
+
+| plan | products | interval | price | founder | price setting |
+|---|---|---|---|---|---|
+| `pro_monthly` | pro | month | $14.99 | $7.49 | `STRIPE_PRO_MONTHLY_PRICE_ID` |
+| `pro_annual` | pro | year | $119.99 | $59.99 | `STRIPE_PRO_ANNUAL_PRICE_ID` |
+| `tennis_monthly` | tennis | month | $39.99 | $19.99 | `STRIPE_TENNIS_MONTHLY_PRICE_ID` |
+| `tennis_annual` | tennis | year | $349.99 | $174.99 | `STRIPE_TENNIS_ANNUAL_PRICE_ID` |
+| `bundle_monthly` | pro, tennis | month | $44.99 | $22.49 | `STRIPE_BUNDLE_MONTHLY_PRICE_ID` |
+| `bundle_annual` | pro, tennis | year | $399.99 | $199.99 | `STRIPE_BUNDLE_ANNUAL_PRICE_ID` |
+
+**Founder cents need checking in TEST.** Every price ends in 99 cents, so 50% falls on a half cent. The founder column assumes the founder pays the lower cent (for example $7.49 on $14.99). Confirm what Stripe actually charges with FOUNDER50 in the P12 run. If it charges the other cent ($7.50), there are two options, and Doyle chooses:
+- accept the cent;
+- use six founder prices instead of the coupon. That means a `founder` price per plan, chosen server-side, which costs one more setting per plan.
+
+`Plan.amount_cents` holds these amounts, and `app.launch_check` fails any configured price that charges a different amount, currency or interval.
 
 - **One row per user.** A user holds one subscription row, so the bundle is its own plan, and moving between Pro, Tennis and Bundle goes through the Customer Portal.
 - **Gates read products, not plan names.** The frontend gates on **products** (`pro`, `tennis`).
@@ -115,14 +123,21 @@ This also changes the legacy `has_premium_access`. A coupon trial whose `trial_e
 
 `BETA_AUTO_PREMIUM` defaults to `true`, which is today's behaviour: new users get `premium`, and that unlocks no paid product. Set it to `false` at launch so new users start on `free`.
 
+## The Stripe account
+
+The Stripe account belongs to Predictium LLC (Doyle, 2026-11-13). Firmcraft is moving to its own LLC and accounts and is not part of Predictium billing.
+
+- **Never modify, disable or reuse the existing live Firmcraft webhook endpoint or portal configuration.** Doyle is migrating them himself.
+- **At launch, Predictium adds its own** live webhook endpoint, pointing at this API, and its own portal configuration. Both use their own signing secret.
+
 ## Configuration to set (TEST mode first) — Claudia, P1
 
 **Stripe objects, created in TEST mode:**
 - **Products:** Pro and Tennis, plus a Bundle product.
 - **Prices:**
   - Pro: $14.99/month and $119.99/year.
-  - Tennis: Doyle's price.
-  - Bundle: Doyle's price.
+  - Tennis: $39.99/month and $349.99/year.
+  - Bundle: $44.99/month and $399.99/year.
 - **Coupon `FOUNDER50`:** percent_off 50, duration `forever`.
 - **Webhook endpoint:** `https://<api>/webhooks/stripe`, subscribed to the six events listed under Webhooks.
 - **Customer Portal:**

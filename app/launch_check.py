@@ -26,9 +26,18 @@ def checks():
             yield False, f"{plan}: no price id configured"
             continue
         price = stripe.Price.retrieve(pid)
-        ok = bool(price.get("active")) and price.get("livemode") == (mode == "live")
+        recurring = price.get("recurring") or {}
+        ok = (
+            bool(price.get("active"))
+            and price.get("livemode") == (mode == "live")
+            and price.get("unit_amount") == PLANS[plan].amount_cents
+            and price.get("currency") == "usd"
+            and recurring.get("interval") == PLANS[plan].interval
+            and recurring.get("interval_count", 1) == 1
+        )
         yield ok, f"{plan}: {pid} active={price.get('active')} livemode={price.get('livemode')} " \
-                  f"amount={price.get('unit_amount')} interval={(price.get('recurring') or {}).get('interval')}"
+                  f"amount={price.get('unit_amount')} (want {PLANS[plan].amount_cents}) " \
+                  f"interval={recurring.get('interval')} (want {PLANS[plan].interval})"
 
     coupon_id = s.stripe_founder_coupon_id
     if not coupon_id:

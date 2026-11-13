@@ -519,3 +519,15 @@ def test_duplicate_customer_rows_do_not_raise(world, monkeypatch):
              "data": {"object": {"id": "sub_9", "customer": "cus_1"}}}
     assert post_event(world, monkeypatch, event, stripe_sub(sid="sub_9")).status_code == 200
 
+
+
+def test_catalog_amounts_are_doyles_prices():
+    # Doyle, 2026-11-13: Pro $14.99/$119.99, Tennis $39.99/$349.99,
+    # Bundle $44.99/$399.99 (monthly/annual), in cents.
+    assert {p.id: p.amount_cents for p in catalog.PLANS.values()} == {
+        "pro_monthly": 1499, "pro_annual": 11999,
+        "tennis_monthly": 3999, "tennis_annual": 34999,
+        "bundle_monthly": 4499, "bundle_annual": 39999,
+    }
+    for p in catalog.PLANS.values():
+        assert p.interval == ("year" if p.id.endswith("_annual") else "month")
