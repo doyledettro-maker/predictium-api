@@ -16,6 +16,9 @@ if TYPE_CHECKING:
     from app.models.user import User
 
 
+LIVE_STATUSES = ("trialing", "active", "past_due")
+
+
 class Subscription(Base):
     """
     Subscription model synced with Stripe.
@@ -111,7 +114,9 @@ class Subscription(Base):
         now = now or datetime.now(timezone.utc)
         if self.status == "trialing":
             return self.trial_ends_at is None or _aware(self.trial_ends_at) > now
-        if self.status != "active":
+        if self.status == "past_due" and not get_settings().past_due_grants_access:
+            return False
+        if self.status not in ("active", "past_due"):
             return False
         if self.current_period_end is None:
             return True
@@ -122,6 +127,15 @@ class Subscription(Base):
     def is_active(self) -> bool:
         """Check if the subscription is currently active."""
         return self.is_active_at()
+
+    @property
+    def has_live_stripe_subscription(self) -> bool:
+        """A Stripe subscription that is still billing (or retrying) exists.
+
+        This, not access, is what forbids a second checkout or a coupon: a
+        past_due card is still a subscription Stripe will charge.
+        """
+        return bool(self.stripe_subscription_id) and self.status in LIVE_STATUSES
 
     @property
     def entitlements(self) -> FrozenSet[str]:

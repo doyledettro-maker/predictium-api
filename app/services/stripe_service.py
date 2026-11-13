@@ -34,6 +34,18 @@ class WebhookNotApplied(Exception):
     """An event could not be applied; Stripe must retry it."""
 
 
+class WebhookUnmatched(Exception):
+    """An event names a customer or subscription we have no row for.
+
+    Retrying cannot fix it (no row will appear), and three days of 500s can
+    get the endpoint disabled, so the route acknowledges it and raises an
+    ALERT in the log for a human.
+    """
+
+
+LIVE_STRIPE_STATUSES = ("trialing", "active", "past_due", "unpaid")
+
+
 def _get(obj: Any, key: str, default: Any = None) -> Any:
     """Read a key from a Stripe object or a plain dict."""
     try:
@@ -131,8 +143,31 @@ class StripeService:
             params["allow_promotion_codes"] = True
         return params
 
+    def live_subscription_ids(self, customer_id: str) -> list:
+        """The customer's subscriptions Stripe is still billing or retrying.
+
+        Asked of Stripe itself at checkout, because our row can lag a webhook
+        or have been overwritten; the row alone is not proof of "no
+        subscription"."""
+        subs = stripe.Subscription.list(customer=customer_id, status="all", limit=20)
+        return [s["id"] for s in _get(subs, "data", []) if _get(s, "status") in LIVE_STRIPE_STATUSES]
+
+    def expire_open_checkouts(self, customer_id: str) -> int:
+        """Expire every still-open Checkout Session for the customer, so only
+        the newest one can complete. Two tabs can no longer both pay."""
+        sessions = stripe.checkout.Session.list(customer=customer_id, status="open", limit=20)
+        n = 0
+        for s in _get(sessions, "data", []):
+            stripe.checkout.Session.expire(s["id"])
+            n += 1
+        return n
+
     async def create_checkout_session(self, **kwargs: Any) -> str:
-        """Create a Checkout Session and return its URL."""
+        """Create a Checkout Session and return its URL (expiring any older
+        open session for the same customer first)."""
+        expired = self.expire_open_checkouts(kwargs["customer_id"])
+        if expired:
+            logger.info(f"Expired {expired} open checkout session(s) for {kwargs['customer_id']}")
         session = stripe.checkout.Session.create(**self.checkout_session_params(**kwargs))
         logger.info(f"Created checkout session: {session.id} (plan={kwargs.get('plan_id')})")
         return session.url
@@ -178,9 +213,15 @@ class StripeService:
             if row:
                 return row
         if customer_id:
+            # stripe_customer_id is not unique in the schema; never raise on a
+            # duplicate, take the most recently updated row.
             row = (
-                await db.execute(select(Subscription).where(Subscription.stripe_customer_id == customer_id))
-            ).scalar_one_or_none()
+                await db.execute(
+                    select(Subscription)
+                    .where(Subscription.stripe_customer_id == customer_id)
+                    .order_by(Subscription.updated_at.desc())
+                )
+            ).scalars().first()
             if row:
                 return row
         if user_id:
@@ -207,10 +248,35 @@ class StripeService:
         user_id = user_id or _get(_get(stripe_sub, "metadata", {}), "user_id")
         row = await self._row_for(db, subscription_id=subscription_id, customer_id=customer_id, user_id=user_id)
         if row is None:
-            raise WebhookNotApplied(f"no subscription row for Stripe subscription {subscription_id}")
+            raise WebhookUnmatched(f"no subscription row for Stripe subscription {subscription_id}")
 
         stripe_status = _get(stripe_sub, "status", "")
         status = STATUS_MAP.get(stripe_status, "expired")
+
+        # One row per user, many subscriptions over a lifetime. An event for
+        # a subscription that is NOT the row's own (found through the
+        # customer or user fallback) may only take the row over when it is
+        # itself live, or when the row's own subscription is not. A late
+        # `deleted` for a canceled sub_1 must never lock out the sub_2 payer.
+        if (
+            row.stripe_subscription_id
+            and row.stripe_subscription_id != subscription_id
+            and row.has_live_stripe_subscription
+            and stripe_status not in LIVE_STRIPE_STATUSES
+        ):
+            logger.info(
+                f"Ignoring {stripe_status} {subscription_id}: row follows live {row.stripe_subscription_id}"
+            )
+            return row
+        if (
+            row.stripe_subscription_id
+            and row.stripe_subscription_id != subscription_id
+            and row.has_live_stripe_subscription
+        ):
+            logger.error(
+                f"ALERT two live Stripe subscriptions for one user: {row.stripe_subscription_id} and "
+                f"{subscription_id}; the row now follows the newer event. Refund or cancel one by hand."
+            )
         if status in ("trialing", "active", "past_due"):
             price_id = subscription_price_id(stripe_sub)
             plan = plan_for_price(price_id, self.settings)

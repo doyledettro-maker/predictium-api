@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
-from app.services.stripe_service import stripe_service
+from app.services.stripe_service import WebhookUnmatched, stripe_service
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +66,12 @@ async def handle_stripe_webhook(
     # as this route used to, dropped a paid upgrade with no retry.
     try:
         await stripe_service.handle_event(event, db)
+    except WebhookUnmatched as e:
+        # No row will ever appear for it, so a retry loop helps nobody and
+        # risks Stripe disabling the endpoint: acknowledge and alert.
+        logger.error(f"ALERT unmatched Stripe webhook {event_type} ({event.get('id')}): {e}")
+        await db.rollback()
+        return {"received": "true"}
     except Exception as e:
         logger.error(f"Error processing webhook {event_type} ({event.get('id')}): {e}")
         await db.rollback()

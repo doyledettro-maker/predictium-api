@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.billing_catalog import PLANS, PRODUCTS, is_founder, plan_products, price_id_for
+from app.billing_catalog import PLANS, PRODUCTS, is_founder, price_id_for
 from app.config import get_settings
 from app.db.database import get_db
 from app.dependencies import get_current_user_with_db, get_subscription
@@ -90,6 +90,9 @@ class PortalSessionResponse(BaseModel):
 
     url: str
     portal_url: str  # same value; kept for older callers
+
+
+ALREADY_SUBSCRIBED = "You already have a subscription. Change plans from Manage Subscription."
 
 
 def _interval(plan: str) -> Optional[str]:
@@ -228,7 +231,14 @@ async def redeem_coupon(
     if not subscription:
         subscription = Subscription(user_id=user.id)
         db.add(subscription)
-    
+    elif subscription.has_live_stripe_subscription:
+        # A coupon would overwrite the paying row: its entitlements would
+        # vanish while Stripe kept charging.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You already have a paid subscription, so this coupon cannot be applied.",
+        )
+
     # Apply coupon
     trial_ends_at = datetime.now(timezone.utc) + timedelta(days=coupon.trial_days)
     subscription.plan = coupon.plan
@@ -294,11 +304,10 @@ async def create_checkout_session(
         subscription = Subscription(user_id=user.id, plan="free", status="active")
         db.add(subscription)
         await db.flush()
-    elif subscription.stripe_subscription_id and plan_products(subscription.plan) and subscription.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="You already have a subscription. Change plans from Manage Subscription.",
-        )
+    elif subscription.has_live_stripe_subscription:
+        # Keyed on a live Stripe subscription, not on access: a past_due card
+        # is still billed, so a second checkout would charge twice.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ALREADY_SUBSCRIBED)
 
     if not subscription.stripe_customer_id:
         subscription.stripe_customer_id = await stripe_service.create_customer(
@@ -306,6 +315,9 @@ async def create_checkout_session(
             user_id=str(user.id),
         )
         await db.commit()
+    elif stripe_service.live_subscription_ids(subscription.stripe_customer_id):
+        # Our row can lag a webhook or have been overwritten; Stripe cannot.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=ALREADY_SUBSCRIBED)
 
     url = await stripe_service.create_checkout_session(
         customer_id=subscription.stripe_customer_id,

@@ -174,6 +174,12 @@ class World:
         monkeypatch.setattr(svc_module.stripe.checkout.Session, "create", staticmethod(session_create))
         monkeypatch.setattr(svc_module.stripe.billing_portal.Session, "create", staticmethod(portal_create))
         monkeypatch.setattr(stripe_service, "settings", settings)
+        # Stripe's own view of the customer: no live subscriptions and no
+        # open checkouts unless a test says otherwise.
+        self.stripe_live = []
+        self.expired = []
+        monkeypatch.setattr(stripe_service, "live_subscription_ids", lambda cid: list(self.stripe_live))
+        monkeypatch.setattr(stripe_service, "expire_open_checkouts", lambda cid: self.expired.append(cid) or 0)
 
     def run(self, coro):
         return asyncio.run(coro)
@@ -376,10 +382,12 @@ def test_failure_is_not_acknowledged(world, monkeypatch):
     r = post_event(world, monkeypatch, event, stripe_sub(price="price_unknown"))
     assert r.status_code == 500
     assert world.row().plan == "premium"
-    # No row at all for this customer: also a retry, never a 200.
+    # No row at all for this customer: a retry can never fix it, so it is
+    # acknowledged (an ALERT in the log), not a three-day 500 loop.
     event["data"]["object"]["customer"] = "cus_other"
     r = post_event(world, monkeypatch, event, stripe_sub(customer="cus_other", sid="sub_x"))
-    assert r.status_code == 500
+    assert r.status_code == 200
+    assert world.row().plan == "premium"
 
 
 def test_unhandled_events_are_acknowledged(world, monkeypatch):
@@ -408,3 +416,106 @@ def test_signup_auto_premium_flag(monkeypatch, settings):
     src = inspect.getsource(dependencies.get_current_user_with_db)
     assert 'plan="premium" if get_settings().beta_auto_premium else "free"' in src
     assert settings.beta_auto_premium is True  # unchanged until paid launch
+
+
+# ---------------------------------------------------------------------------
+# Portfolio review of #20 (85879a0): the three blockers
+# ---------------------------------------------------------------------------
+
+def live_row(world, sid="sub_2", plan="bundle_annual", status="active"):
+    world.set_row(stripe_customer_id="cus_1", stripe_subscription_id=sid, plan=plan, status=status,
+                  current_period_end=datetime.now(timezone.utc) + timedelta(days=300))
+
+
+def test_stale_event_for_an_old_subscription_never_overwrites_the_live_one(world, monkeypatch):
+    # The user canceled sub_1, then bought a bundle as sub_2. A late
+    # `deleted` (and an `updated`) for sub_1 must leave sub_2's row alone.
+    live_row(world)
+    for kind in ("customer.subscription.deleted", "customer.subscription.updated"):
+        event = {"id": "evt_s", "type": kind, "data": {"object": {"id": "sub_1", "customer": "cus_1"}}}
+        r = post_event(world, monkeypatch, event, stripe_sub(status="canceled", sid="sub_1"))
+        assert r.status_code == 200
+        row = world.row()
+        assert (row.stripe_subscription_id, row.plan, row.status) == ("sub_2", "bundle_annual", "active")
+        assert row.entitlements == {"pro", "tennis"}
+
+
+def test_a_new_live_subscription_takes_over_a_dead_row(world, monkeypatch):
+    world.set_row(stripe_customer_id="cus_1", stripe_subscription_id="sub_1", plan="free", status="canceled")
+    event = {"id": "evt_n", "type": "customer.subscription.created",
+             "data": {"object": {"id": "sub_2", "customer": "cus_1"}}}
+    assert post_event(world, monkeypatch, event, stripe_sub(sid="sub_2", price="price_pro_y")).status_code == 200
+    row = world.row()
+    assert (row.stripe_subscription_id, row.plan, row.status) == ("sub_2", "pro_annual", "active")
+
+
+def test_the_409_holds_for_past_due_and_for_what_stripe_says(world):
+    live_row(world, plan="pro_monthly", status="past_due")
+    r = world.client.post("/billing/create-checkout-session", json={"plan": "bundle_monthly"})
+    assert r.status_code == 409
+    # The row says nothing is live (lagged or overwritten); Stripe says sub_7 is.
+    world.set_row(stripe_subscription_id=None, plan="premium", status="active")
+    world.stripe_live = ["sub_7"]
+    assert world.client.post("/billing/create-checkout-session", json={"plan": "pro_monthly"}).status_code == 409
+    assert not [c for c in world.calls if c[0] == "checkout"]
+
+
+def test_a_new_checkout_expires_the_older_open_one(world):
+    world.set_row(stripe_customer_id="cus_1")
+    assert world.client.post("/billing/create-checkout-session", json={"plan": "pro_monthly"}).status_code == 200
+    assert world.expired == ["cus_1"]
+
+
+def test_coupon_cannot_overwrite_a_paying_row(world):
+    async def add_coupon():
+        async with world.maker() as session:
+            session.add(Coupon(code="BETA7", plan="premium", trial_days=7, current_uses=0, is_active=True))
+            await session.commit()
+    world.run(add_coupon())
+    live_row(world)
+    r = world.client.post("/billing/redeem-coupon", json={"code": "BETA7"})
+    assert r.status_code == 409
+    row = world.row()
+    assert (row.plan, row.status) == ("bundle_annual", "active")
+
+
+def test_malformed_founder_cutoff_fails_at_settings_load():
+    from app.config import Settings
+    with pytest.raises(Exception):
+        Settings(founder_cutoff_utc="next tuesday")
+    assert Settings(founder_cutoff_utc=" 2026-12-07T00:00:00Z ").founder_cutoff_utc == "2026-12-07T00:00:00Z"
+
+
+def test_paid_launch_refuses_a_fail_open_configuration():
+    from app.config import Settings
+    with pytest.raises(Exception) as e:
+        Settings(paid_launch=True)
+    for name in ("FOUNDER_CUTOFF_UTC", "STRIPE_FOUNDER_COUPON_ID", "BETA_AUTO_PREMIUM=false"):
+        assert name in str(e.value)
+    ok = Settings(paid_launch=True, founder_cutoff_utc="2026-12-07T00:00:00Z",
+                  stripe_founder_coupon_id="FOUNDER50", beta_auto_premium=False)
+    assert ok.paid_launch is True
+
+
+def test_past_due_access_is_a_deliberate_setting(settings, monkeypatch):
+    s = sub(status="past_due", current_period_end=NOW + timedelta(days=5))
+    assert s.is_active_at(NOW) is False
+    monkeypatch.setattr(settings, "past_due_grants_access", True)
+    assert s.is_active_at(NOW) is True
+    assert s.has_live_stripe_subscription is True
+
+
+def test_duplicate_customer_rows_do_not_raise(world, monkeypatch):
+    async def dup():
+        async with world.maker() as session:
+            other = User(cognito_id="c2", email="b@example.com", role="subscriber", created_at=NOW)
+            session.add(other)
+            await session.flush()
+            session.add(Subscription(user_id=other.id, plan="free", status="active", stripe_customer_id="cus_1"))
+            await session.commit()
+    world.set_row(stripe_customer_id="cus_1")
+    world.run(dup())
+    event = {"id": "evt_d", "type": "customer.subscription.updated",
+             "data": {"object": {"id": "sub_9", "customer": "cus_1"}}}
+    assert post_event(world, monkeypatch, event, stripe_sub(sid="sub_9")).status_code == 200
+
