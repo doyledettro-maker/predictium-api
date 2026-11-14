@@ -9,6 +9,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db.database import get_db
 from app.models.subscription import Subscription
 from app.models.user import User
@@ -102,12 +103,13 @@ async def get_current_user_with_db(
         db.add(user)
         await db.flush()  # Generate user.id before creating subscription
         
-        # Create default subscription
-        # BETA: Auto-grant premium access to all new users
-        # TODO: Change back to plan="free" after beta ends
+        # Create default subscription. BETA (until paid launch): every new
+        # user gets the legacy "premium" auto-grant, which unlocks no paid
+        # product (app.billing_catalog). BETA_AUTO_PREMIUM=false at launch
+        # starts new users on "free".
         subscription = Subscription(
             user_id=user.id,
-            plan="premium",
+            plan="premium" if get_settings().beta_auto_premium else "free",
             status="active",
         )
         db.add(subscription)

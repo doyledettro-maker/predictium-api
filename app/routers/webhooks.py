@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
-from app.services.stripe_service import stripe_service
+from app.services.stripe_service import WebhookUnmatched, stripe_service
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,9 @@ async def handle_stripe_webhook(
     
     Processes subscription lifecycle events:
     - checkout.session.completed: Initial subscription setup
-    - customer.subscription.updated: Plan changes, renewals
-    - customer.subscription.deleted: Cancellations
+    - customer.subscription.created / updated / deleted: plan changes,
+      renewals, cancellations
+    - invoice.paid / invoice.payment_failed: renewal outcomes
     
     No authentication required (uses Stripe signature verification).
     
@@ -57,21 +58,26 @@ async def handle_stripe_webhook(
         )
     
     event_type = event["type"]
-    logger.info(f"Received Stripe webhook: {event_type}")
-    
-    # Handle events
+    logger.info(f"Received Stripe webhook: {event_type} ({event.get('id')})")
+
+    # A failure is NEVER acknowledged: a 500 makes Stripe retry with backoff
+    # for up to three days, and every handler is idempotent (it re-reads the
+    # subscription from Stripe), so a retry is safe. Answering 200 on error,
+    # as this route used to, dropped a paid upgrade with no retry.
     try:
-        if event_type == "checkout.session.completed":
-            await stripe_service.handle_checkout_completed(event, db)
-        elif event_type == "customer.subscription.updated":
-            await stripe_service.handle_subscription_updated(event, db)
-        elif event_type == "customer.subscription.deleted":
-            await stripe_service.handle_subscription_deleted(event, db)
-        else:
-            logger.debug(f"Unhandled webhook event type: {event_type}")
+        await stripe_service.handle_event(event, db)
+    except WebhookUnmatched as e:
+        # No row will ever appear for it, so a retry loop helps nobody and
+        # risks Stripe disabling the endpoint: acknowledge and alert.
+        logger.error(f"ALERT unmatched Stripe webhook {event_type} ({event.get('id')}): {e}")
+        await db.rollback()
+        return {"received": "true"}
     except Exception as e:
-        logger.error(f"Error processing webhook {event_type}: {e}")
-        # Don't raise - return 200 to prevent Stripe retries
-        # Log the error for investigation
-    
+        logger.error(f"Error processing webhook {event_type} ({event.get('id')}): {e}")
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook not applied; Stripe will retry",
+        )
+
     return {"received": "true"}

@@ -1,17 +1,22 @@
 """Subscription SQLAlchemy model."""
 
 import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, FrozenSet, Optional
 
 from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.config import get_settings
 from app.db.database import Base
+from app.billing_catalog import PRODUCT_PRO, plan_products
 
 if TYPE_CHECKING:
     from app.models.user import User
+
+
+LIVE_STATUSES = ("trialing", "active", "past_due")
 
 
 class Subscription(Base):
@@ -96,18 +101,62 @@ class Subscription(Base):
     def __repr__(self) -> str:
         return f"<Subscription {self.plan} ({self.status})>"
 
+    def is_active_at(self, now: Optional[datetime] = None) -> bool:
+        """Whether the subscription grants access at `now`.
+
+        A status alone is not enough: a trial ends at `trial_ends_at` (coupon
+        trials used to run forever), and a Stripe subscription ends at
+        `current_period_end` plus a grace window, so a late renewal webhook
+        does not lock out a paying user while a lapsed one stops reading as
+        active. A row with no Stripe subscription and no period end (the beta
+        auto-grant) keeps its status as written.
+        """
+        now = now or datetime.now(timezone.utc)
+        if self.status == "trialing":
+            return self.trial_ends_at is None or _aware(self.trial_ends_at) > now
+        if self.status == "past_due" and not get_settings().past_due_grants_access:
+            return False
+        if self.status not in ("active", "past_due"):
+            return False
+        if self.current_period_end is None:
+            return True
+        grace = timedelta(hours=get_settings().subscription_grace_hours)
+        return _aware(self.current_period_end) + grace > now
+
     @property
     def is_active(self) -> bool:
         """Check if the subscription is currently active."""
-        return self.status in ("trialing", "active")
+        return self.is_active_at()
+
+    @property
+    def has_live_stripe_subscription(self) -> bool:
+        """A Stripe subscription that is still billing (or retrying) exists.
+
+        This, not access, is what forbids a second checkout or a coupon: a
+        past_due card is still a subscription Stripe will charge.
+        """
+        return bool(self.stripe_subscription_id) and self.status in LIVE_STATUSES
+
+    @property
+    def entitlements(self) -> FrozenSet[str]:
+        """The paid products this subscription unlocks right now."""
+        return plan_products(self.plan) if self.is_active else frozenset()
 
     @property
     def has_premium_access(self) -> bool:
         """Check if user has Premium access (any pro plan or legacy premium)."""
-        return self.is_active and self.plan in ("premium", "pro_weekly", "pro_monthly", "pro_season")
+        return self.is_active and (
+            self.plan in ("premium", "pro_weekly", "pro_monthly", "pro_season")
+            or PRODUCT_PRO in plan_products(self.plan)
+        )
 
     @property
     def has_data_api_access(self) -> bool:
         """Check if user has Data API access."""
         return self.is_active and self.plan in ("data_api",)
+
+
+def _aware(dt: datetime) -> datetime:
+    """Read a naive timestamp as UTC (SQLite in tests drops the zone)."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 

@@ -3,10 +3,12 @@ Application configuration using Pydantic Settings.
 All settings are loaded from environment variables.
 """
 
+from datetime import datetime
 from functools import lru_cache
 from typing import List
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +38,62 @@ class Settings(BaseSettings):
     stripe_monthly_price_id: str = ""
     stripe_season_price_id: str = ""
     stripe_data_api_price_id: str = ""
+    # Paid launch catalog (2026-11-13, Doyle: Pro for every sport except
+    # tennis, a standalone Tennis tier, and a Pro + Tennis bundle; monthly and
+    # annual; no day or season pass). TEST-mode price ids until launch.
+    stripe_pro_monthly_price_id: str = ""
+    stripe_pro_annual_price_id: str = ""
+    stripe_tennis_monthly_price_id: str = ""
+    stripe_tennis_annual_price_id: str = ""
+    stripe_bundle_monthly_price_id: str = ""
+    stripe_bundle_annual_price_id: str = ""
+    # FOUNDER50: percent_off 50, duration forever. Applied server-side at
+    # checkout to every founder; empty disables it.
+    stripe_founder_coupon_id: str = ""
+    # A founder is any user created before this instant (ISO 8601, UTC).
+    # Empty means paid launch has not happened, so every user is a founder.
+    founder_cutoff_utc: str = ""
+    # Where Stripe sends the buyer back. Checkout and portal URLs are built
+    # here from this, never taken from the client.
+    frontend_url: str = "https://www.predictium.ai"
+    # BETA: every new user is created with plan "premium". Set False at paid
+    # launch so new users start on "free".
+    beta_auto_premium: bool = True
+    # A paid subscription stays active this long past current_period_end, so
+    # a late renewal webhook does not lock a paying user out.
+    subscription_grace_hours: int = 72
+    # A past_due subscription (Stripe is retrying the card) grants nothing by
+    # default: a deliberate product call, flip to keep access during retries.
+    past_due_grants_access: bool = False
+    # True from paid launch. Startup then refuses a configuration that would
+    # fail open: no founder cutoff (everyone a founder), no founder coupon
+    # (founders get promo codes instead of 50%), or the beta auto-grant.
+    paid_launch: bool = False
+
+    @field_validator("founder_cutoff_utc")
+    @classmethod
+    def _founder_cutoff_is_iso(cls, v: str) -> str:
+        """A malformed cutoff fails at startup, never inside a billing read."""
+        raw = (v or "").strip()
+        if raw:
+            datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return raw
+
+    @model_validator(mode="after")
+    def _paid_launch_is_closed(self) -> "Settings":
+        if self.paid_launch:
+            missing = [
+                name
+                for name, ok in (
+                    ("FOUNDER_CUTOFF_UTC", bool(self.founder_cutoff_utc)),
+                    ("STRIPE_FOUNDER_COUPON_ID", bool(self.stripe_founder_coupon_id)),
+                    ("BETA_AUTO_PREMIUM=false", not self.beta_auto_premium),
+                )
+                if not ok
+            ]
+            if missing:
+                raise ValueError(f"PAID_LAUNCH requires: {', '.join(missing)}")
+        return self
 
     # AWS S3
     s3_predictions_bucket: str = "predictium-predictions"
