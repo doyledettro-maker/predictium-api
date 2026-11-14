@@ -148,6 +148,17 @@ async def get_stats(
     return await analytics_service.get_stats(db)
 
 
+@router.get("/signup-sources")
+async def get_signup_sources(
+    days: int = 90,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(require_analytics_key),
+):
+    """Per-user sign-up attribution for the admin Users page, keyed by
+    Cognito sub (no emails). `days` is clamped to 1..366."""
+    return await analytics_service.get_signup_sources(db, days)
+
+
 @router.get("/report")
 async def get_report(
     report_date: Optional[date] = None,

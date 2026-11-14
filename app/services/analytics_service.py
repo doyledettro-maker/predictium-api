@@ -182,6 +182,226 @@ def _sport_country_line(s: dict[str, Any]) -> str:
     )
 
 
+# --- Sign-up sources (Doyle, 2026-11-14) -----------------------------------
+# Which channel brought each new user. Nothing new is collected: the tracker
+# already logs a persistent visitor_id on every hit and the Cognito sub as
+# user_id once someone is signed in, so a user's visitor ids lead back to
+# their first visit (first touch), and the session of their first signed-in
+# hit leads back to the page that session landed on (the sign-up visit).
+# A user who cleared storage or switched devices before signing up has no
+# trail and reads "Unknown", never a guess.
+
+SIGNUP_CHANNELS = (
+    "X", "Search", "AI assistant", "Reddit", "Email", "Other site", "Direct", "Unknown",
+)
+_X_HOSTS = ("t.co", "x.com", "twitter.com", "mobile.twitter.com")
+# Checked before search so gemini.google.com is not read as Google search.
+_AI_HOSTS = (
+    "chatgpt.com", "chat.openai.com", "perplexity.ai", "gemini.google.com",
+    "claude.ai", "copilot.microsoft.com", "grok.com", "meta.ai", "you.com",
+)
+_SEARCH_HOSTS = (
+    "google.", "bing.com", "duckduckgo.com", "yahoo.com", "ecosia.org",
+    "search.brave.com", "baidu.com", "yandex.", "startpage.com",
+)
+# Our own pages and the sign-in round trip are not a source.
+_NOT_A_SOURCE_HOSTS = SELF_HOSTS + ("amazoncognito.com", "accounts.google.com")
+
+
+def referrer_host(referrer: Optional[str]) -> Optional[str]:
+    """'https://www.google.com/search?q=x' -> 'google.com'; None for empty."""
+    if not referrer:
+        return None
+    host = referrer.strip().lower()
+    for prefix in ("https://", "http://"):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+    host = host.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0]
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def _host_matches(host: str, patterns: tuple[str, ...]) -> bool:
+    for p in patterns:
+        if p.endswith("."):
+            if host.startswith(p) or f".{p}" in f".{host}":
+                return True
+        elif host == p or host.endswith(f".{p}"):
+            return True
+    return False
+
+
+def classify_channel(
+    referrer: Optional[str], utm_source: Optional[str], utm_medium: Optional[str]
+) -> str:
+    """One channel per visit. UTM tags win over the referrer because our own
+    links carry them (the X threads tag utm_source=x)."""
+    src = (utm_source or "").strip().lower()
+    med = (utm_medium or "").strip().lower()
+    if src:
+        if src in ("x", "twitter", "t.co", "x.com"):
+            return "X"
+        if src == "reddit":
+            return "Reddit"
+        if src in ("email", "newsletter") or med in ("email", "newsletter"):
+            return "Email"
+        if src in ("chatgpt", "chatgpt.com", "openai", "perplexity", "gemini", "claude"):
+            return "AI assistant"
+        if src in ("google", "bing", "duckduckgo") and med in ("organic", ""):
+            return "Search"
+        return "Other site"
+    host = referrer_host(referrer)
+    if host is None or _host_matches(host, _NOT_A_SOURCE_HOSTS):
+        return "Direct"
+    if _host_matches(host, _X_HOSTS):
+        return "X"
+    if _host_matches(host, _AI_HOSTS):
+        return "AI assistant"
+    if _host_matches(host, _SEARCH_HOSTS):
+        return "Search"
+    if _host_matches(host, ("reddit.com", "redd.it")):
+        return "Reddit"
+    if _host_matches(host, ("mail.google.com", "outlook.live.com", "mail.yahoo.com")):
+        return "Email"
+    return "Other site"
+
+
+def _touch(row: Any, prefix: str) -> Optional[dict[str, Any]]:
+    ts = getattr(row, f"{prefix}_ts")
+    if ts is None:
+        return None
+    referrer = getattr(row, f"{prefix}_referrer")
+    utm_source = getattr(row, f"{prefix}_utm_source")
+    utm_medium = getattr(row, f"{prefix}_utm_medium")
+    return {
+        "at": ts.isoformat(),
+        "path": getattr(row, f"{prefix}_path"),
+        "referrer_host": referrer_host(referrer),
+        "utm_source": utm_source,
+        "utm_medium": utm_medium,
+        "utm_campaign": getattr(row, f"{prefix}_utm_campaign"),
+        "channel": classify_channel(referrer, utm_source, utm_medium),
+    }
+
+
+async def _signup_attribution(
+    db: AsyncSession, start: date, end: date
+) -> list[dict[str, Any]]:
+    """One row per user who signed up on local dates [start, end], keyed by
+    Cognito sub. The sign-up time is users.created_at; a user with no
+    signed-in page view has no trail and gets channel "Unknown"."""
+    q = text(
+        f"""
+        WITH new_users AS (
+            SELECT cognito_id AS user_id, created_at
+            FROM users
+            WHERE {_local_date_expr('created_at')} BETWEEN :start AND :end
+        ),
+        first_auth AS (
+            SELECT DISTINCT ON (pv.user_id)
+                   pv.user_id, pv.ts AS signed_in_at, pv.session_id
+            FROM page_views pv
+            JOIN new_users n ON n.user_id = pv.user_id
+            WHERE NOT pv.is_bot
+            ORDER BY pv.user_id, pv.ts
+        ),
+        user_visitors AS (
+            SELECT DISTINCT pv.user_id, pv.visitor_id
+            FROM page_views pv
+            JOIN new_users n ON n.user_id = pv.user_id
+            WHERE pv.visitor_id IS NOT NULL
+        ),
+        first_touch AS (
+            SELECT DISTINCT ON (v.user_id)
+                   v.user_id, pv.ts, pv.path, pv.referrer,
+                   pv.utm_source, pv.utm_medium, pv.utm_campaign
+            FROM user_visitors v
+            JOIN first_auth fa ON fa.user_id = v.user_id
+            JOIN page_views pv ON pv.visitor_id = v.visitor_id
+            WHERE NOT pv.is_bot AND pv.ts <= fa.signed_in_at
+            ORDER BY v.user_id, pv.ts
+        ),
+        signup_visit AS (
+            SELECT DISTINCT ON (fa.user_id)
+                   fa.user_id, pv.ts, pv.path, pv.referrer,
+                   pv.utm_source, pv.utm_medium, pv.utm_campaign
+            FROM first_auth fa
+            JOIN page_views pv ON pv.session_id = fa.session_id
+            WHERE fa.session_id IS NOT NULL AND NOT pv.is_bot
+              AND pv.ts <= fa.signed_in_at
+            ORDER BY fa.user_id, pv.ts
+        )
+        SELECT n.user_id, n.created_at,
+               ft.ts AS ft_ts, ft.path AS ft_path, ft.referrer AS ft_referrer,
+               ft.utm_source AS ft_utm_source, ft.utm_medium AS ft_utm_medium,
+               ft.utm_campaign AS ft_utm_campaign,
+               sv.ts AS sv_ts, sv.path AS sv_path, sv.referrer AS sv_referrer,
+               sv.utm_source AS sv_utm_source, sv.utm_medium AS sv_utm_medium,
+               sv.utm_campaign AS sv_utm_campaign
+        FROM new_users n
+        LEFT JOIN first_touch ft ON ft.user_id = n.user_id
+        LEFT JOIN signup_visit sv ON sv.user_id = n.user_id
+        ORDER BY n.created_at DESC
+        """
+    )
+    rows = (await db.execute(q, {"tz": TZ, "start": start, "end": end})).all()
+    out = []
+    for r in rows:
+        first = _touch(r, "ft")
+        signup = _touch(r, "sv")
+        out.append({
+            "user_id": r.user_id,
+            "signed_up_at": r.created_at.isoformat(),
+            "channel": first["channel"] if first else "Unknown",
+            "first_visit": first,
+            "signup_visit": signup,
+        })
+    return out
+
+
+def summarize_signup_sources(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Counts by first-visit channel (fixed order, zeros dropped) plus the
+    first pages those users landed on. No emails and no user ids."""
+    counts = {c: 0 for c in SIGNUP_CHANNELS}
+    landings: dict[str, int] = {}
+    for r in rows:
+        counts[r["channel"]] = counts.get(r["channel"], 0) + 1
+        first = r.get("first_visit")
+        if first and first.get("path"):
+            landings[first["path"]] = landings.get(first["path"], 0) + 1
+    return {
+        "signups": len(rows),
+        "by_channel": [{"channel": c, "signups": n} for c, n in counts.items() if n],
+        "first_pages": [
+            {"path": p, "signups": n}
+            for p, n in sorted(landings.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+        ],
+    }
+
+
+async def get_signup_sources(db: AsyncSession, days: int = 90) -> dict[str, Any]:
+    days = max(1, min(int(days), 366))
+    today = _now_local_date()
+    rows = await _signup_attribution(db, today - timedelta(days=days - 1), today)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "timezone": TZ,
+        "days": days,
+        "summary": summarize_signup_sources(rows),
+        "users": rows,
+    }
+
+
+def _signup_sources_line(summary: dict[str, Any]) -> str:
+    """'X 2 · Search 1 · Unknown 1 (first pages: /blog/x 2, /nfl 1)'."""
+    if not summary.get("signups"):
+        return "no sign-ups"
+    channels = " · ".join(f"{c['channel']} {c['signups']}" for c in summary["by_channel"])
+    pages = ", ".join(f"{p['path']} {p['signups']}" for p in summary.get("first_pages", []))
+    return f"{channels} (first pages: {pages})" if pages else channels
+
+
 # Normalize a referrer URL to its host in SQL (strip scheme, path, www.)
 REFERRER_HOST_EXPR = (
     "regexp_replace(regexp_replace(regexp_replace(referrer, '^https?://', ''), '/.*$', ''), '^www\\.', '')"
@@ -524,6 +744,9 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
             db, "COALESCE(country, '??')", "country", *window_30, limit=10
         ),
         "sport_countries": await _sport_countries(db, *window_30),
+        "signup_sources": summarize_signup_sources(
+            await _signup_attribution(db, *window_30)
+        ),
         "domains": await _top_list(db, "COALESCE(domain, 'unknown')", "domain", *window_30, limit=5),
         "bots": {
             "today": await _bot_hits(db, today, today),
@@ -591,6 +814,9 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
         # Seven days, not one: a single day per sport per country is too
         # thin to read.
         "sport_countries_7d": await _sport_countries(db, week_ago, report_date),
+        "signup_sources_7d": summarize_signup_sources(
+            await _signup_attribution(db, week_ago, report_date)
+        ),
         "bots": await _bot_hits(db, report_date, report_date, limit=10),
         "anomaly_signals": {
             "direct_one_page": day["direct_one_page"],
@@ -807,6 +1033,9 @@ def render_report_html(report: dict[str, Any]) -> str:
     {sport_rows}
   </table>
 
+  <p style="margin:16px 0 4px"><b>Sign-ups by source, last 7 days (where each new user first came from)</b></p>
+  <p style="margin:0">{_signup_sources_line(report.get("signup_sources_7d", {}))}</p>
+
   <p style="color:#999;font-size:12px;margin-top:20px">
     Full dashboard: <a href="https://www.predictium.ai/admin/traffic">predictium.ai/admin/traffic</a>
   </p>
@@ -890,6 +1119,7 @@ def render_report_slack(report: dict[str, Any]) -> dict[str, Any]:
         f"*Top referrers:*\n{refs}",
         f"*Top countries:*\n{countries}",
         f"*By sport, last 7 days (share of views from outside the US):*\n{by_sport}",
+        f"*Sign-ups by source, last 7 days:* {_signup_sources_line(report.get('signup_sources_7d', {}))}",
         "<https://www.predictium.ai/admin/traffic|Full dashboard →>",
     ]
     return {"text": "\n".join(text_lines)}
