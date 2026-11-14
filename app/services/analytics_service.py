@@ -310,7 +310,16 @@ async def _signup_attribution(
 
     Every page_views scan is bounded to SIGNUP_LOOKBACK_DAYS before the
     window, so the cost follows the window, not all-time history (#21
-    review: four unbounded scans, 424 ms on 600k rows)."""
+    review: four unbounded scans, 424 ms on 600k rows). `recent` is NOT
+    MATERIALIZED so the planner pushes the joins into it; materialized,
+    the plan crosses Postgres's JIT threshold (about 1,030 ms against
+    341 ms on 600k rows, #22 review).
+
+    Known limit: page views were first logged around 2026-07. Once a window
+    starts more than 180 days after that (about 2027-01-08), a user whose
+    true first visit is older than the lookback shows their earliest visit
+    inside it as the first visit. Widen SIGNUP_LOOKBACK_DAYS deliberately if
+    that matters; it is not an error."""
     scan_from = datetime.combine(
         start - timedelta(days=SIGNUP_LOOKBACK_DAYS), datetime.min.time(), tzinfo=timezone.utc
     )
@@ -321,7 +330,7 @@ async def _signup_attribution(
             FROM users
             WHERE {_local_date_expr('created_at')} BETWEEN :start AND :end
         ),
-        recent AS (
+        recent AS NOT MATERIALIZED (
             SELECT ts, path, referrer, utm_source, utm_medium, utm_campaign,
                    visitor_id, session_id, user_id
             FROM page_views
