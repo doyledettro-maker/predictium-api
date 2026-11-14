@@ -1,5 +1,7 @@
 # Billing contract (paid launch, 2026-11-13)
 
+> **ON HOLD (Doyle, 2026-11-14, relayed by Portfolio).** The paid plan is paused while Doyle works through it, and he may add a higher tier. Nothing here merges or deploys: no paywall, locked rendering, paid route or pricing page, and no pick is redacted anywhere. The code stays on this branch in Stripe TEST mode. The decisions below, including that founders keep 50% after cancelling, stand as recorded decisions until he picks it back up.
+
 Doyle's rulings (2026-11-13, relayed by Portfolio):
 - One **Pro** plan covers every sport except tennis.
 - **Tennis** is a separate, higher tier, priced by Doyle.
