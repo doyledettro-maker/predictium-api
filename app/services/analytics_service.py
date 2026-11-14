@@ -203,7 +203,14 @@ _AI_HOSTS = (
 _SEARCH_HOSTS = (
     "google.", "bing.com", "duckduckgo.com", "yahoo.com", "ecosia.org",
     "search.brave.com", "baidu.com", "yandex.", "startpage.com",
+    "com.google.android.googlequicksearchbox",  # android-app:// referrer
 )
+# Checked before search, so Gmail and Yahoo Mail are not read as search.
+_EMAIL_HOSTS = (
+    "mail.google.com", "mail.yahoo.com", "outlook.live.com", "outlook.office.com",
+    "com.google.android.gm",  # the Gmail app (android-app:// referrer)
+)
+_PAID_SEARCH_MEDIUMS = ("cpc", "ppc", "paid", "paidsearch", "paid_search", "sem")
 # Our own pages and the sign-in round trip are not a source.
 _NOT_A_SOURCE_HOSTS = SELF_HOSTS + ("amazoncognito.com", "accounts.google.com")
 
@@ -213,9 +220,8 @@ def referrer_host(referrer: Optional[str]) -> Optional[str]:
     if not referrer:
         return None
     host = referrer.strip().lower()
-    for prefix in ("https://", "http://"):
-        if host.startswith(prefix):
-            host = host[len(prefix):]
+    if "://" in host:  # http, https, android-app ...
+        host = host.split("://", 1)[1]
     host = host.split("/", 1)[0].split("?", 1)[0].split(":", 1)[0]
     if host.startswith("www."):
         host = host[4:]
@@ -248,7 +254,9 @@ def classify_channel(
             return "Email"
         if src in ("chatgpt", "chatgpt.com", "openai", "perplexity", "gemini", "claude"):
             return "AI assistant"
-        if src in ("google", "bing", "duckduckgo") and med in ("organic", ""):
+        if src in ("google", "bing", "duckduckgo") and (
+            med in ("organic", "") or med in _PAID_SEARCH_MEDIUMS
+        ):
             return "Search"
         return "Other site"
     host = referrer_host(referrer)
@@ -258,12 +266,12 @@ def classify_channel(
         return "X"
     if _host_matches(host, _AI_HOSTS):
         return "AI assistant"
+    if _host_matches(host, _EMAIL_HOSTS):
+        return "Email"
     if _host_matches(host, _SEARCH_HOSTS):
         return "Search"
     if _host_matches(host, ("reddit.com", "redd.it")):
         return "Reddit"
-    if _host_matches(host, ("mail.google.com", "outlook.live.com", "mail.yahoo.com")):
-        return "Email"
     return "Other site"
 
 
@@ -285,12 +293,27 @@ def _touch(row: Any, prefix: str) -> Optional[dict[str, Any]]:
     }
 
 
+SIGNUP_LOOKBACK_DAYS = 180
+
+
 async def _signup_attribution(
     db: AsyncSession, start: date, end: date
 ) -> list[dict[str, Any]]:
     """One row per user who signed up on local dates [start, end], keyed by
-    Cognito sub. The sign-up time is users.created_at; a user with no
-    signed-in page view has no trail and gets channel "Unknown"."""
+    Cognito sub. The sign-up time is users.created_at.
+
+    Only hits strictly BEFORE the user's first signed-in hit count as a
+    visit: that hit is usually the return from the sign-in round trip
+    (/dashboard from the Cognito or Google host), so counting it read every
+    new-device sign-up as Direct on /dashboard (#21 review). A user with no
+    earlier hit has no trail and reads "Unknown".
+
+    Every page_views scan is bounded to SIGNUP_LOOKBACK_DAYS before the
+    window, so the cost follows the window, not all-time history (#21
+    review: four unbounded scans, 424 ms on 600k rows)."""
+    scan_from = datetime.combine(
+        start - timedelta(days=SIGNUP_LOOKBACK_DAYS), datetime.min.time(), tzinfo=timezone.utc
+    )
     q = text(
         f"""
         WITH new_users AS (
@@ -298,17 +321,22 @@ async def _signup_attribution(
             FROM users
             WHERE {_local_date_expr('created_at')} BETWEEN :start AND :end
         ),
+        recent AS (
+            SELECT ts, path, referrer, utm_source, utm_medium, utm_campaign,
+                   visitor_id, session_id, user_id
+            FROM page_views
+            WHERE ts >= :scan_from AND NOT is_bot
+        ),
         first_auth AS (
             SELECT DISTINCT ON (pv.user_id)
                    pv.user_id, pv.ts AS signed_in_at, pv.session_id
-            FROM page_views pv
+            FROM recent pv
             JOIN new_users n ON n.user_id = pv.user_id
-            WHERE NOT pv.is_bot
             ORDER BY pv.user_id, pv.ts
         ),
         user_visitors AS (
             SELECT DISTINCT pv.user_id, pv.visitor_id
-            FROM page_views pv
+            FROM recent pv
             JOIN new_users n ON n.user_id = pv.user_id
             WHERE pv.visitor_id IS NOT NULL
         ),
@@ -318,8 +346,8 @@ async def _signup_attribution(
                    pv.utm_source, pv.utm_medium, pv.utm_campaign
             FROM user_visitors v
             JOIN first_auth fa ON fa.user_id = v.user_id
-            JOIN page_views pv ON pv.visitor_id = v.visitor_id
-            WHERE NOT pv.is_bot AND pv.ts <= fa.signed_in_at
+            JOIN recent pv ON pv.visitor_id = v.visitor_id
+            WHERE pv.ts < fa.signed_in_at
             ORDER BY v.user_id, pv.ts
         ),
         signup_visit AS (
@@ -327,9 +355,8 @@ async def _signup_attribution(
                    fa.user_id, pv.ts, pv.path, pv.referrer,
                    pv.utm_source, pv.utm_medium, pv.utm_campaign
             FROM first_auth fa
-            JOIN page_views pv ON pv.session_id = fa.session_id
-            WHERE fa.session_id IS NOT NULL AND NOT pv.is_bot
-              AND pv.ts <= fa.signed_in_at
+            JOIN recent pv ON pv.session_id = fa.session_id
+            WHERE fa.session_id IS NOT NULL AND pv.ts < fa.signed_in_at
             ORDER BY fa.user_id, pv.ts
         )
         SELECT n.user_id, n.created_at,
@@ -345,7 +372,9 @@ async def _signup_attribution(
         ORDER BY n.created_at DESC
         """
     )
-    rows = (await db.execute(q, {"tz": TZ, "start": start, "end": end})).all()
+    rows = (
+        await db.execute(q, {"tz": TZ, "start": start, "end": end, "scan_from": scan_from})
+    ).all()
     out = []
     for r in rows:
         first = _touch(r, "ft")
@@ -393,8 +422,26 @@ async def get_signup_sources(db: AsyncSession, days: int = 90) -> dict[str, Any]
     }
 
 
+SIGNUP_SOURCES_UNAVAILABLE: dict[str, Any] = {"unavailable": True, "signups": 0, "by_channel": [], "first_pages": []}
+
+
+async def _signup_sources_summary_safe(db: AsyncSession, start: date, end: date) -> dict[str, Any]:
+    """The report's sign-up summary, never its failure. A savepoint keeps a
+    failed statement from aborting the report's own transaction (#21
+    review); the error is logged and the summary reads unavailable."""
+    try:
+        async with db.begin_nested():
+            rows = await _signup_attribution(db, start, end)
+        return summarize_signup_sources(rows)
+    except Exception:
+        logger.exception("Sign-up sources failed; the report goes out without them")
+        return dict(SIGNUP_SOURCES_UNAVAILABLE)
+
+
 def _signup_sources_line(summary: dict[str, Any]) -> str:
     """'X 2 · Search 1 · Unknown 1 (first pages: /blog/x 2, /nfl 1)'."""
+    if summary.get("unavailable"):
+        return "not available today (see API logs)"
     if not summary.get("signups"):
         return "no sign-ups"
     channels = " · ".join(f"{c['channel']} {c['signups']}" for c in summary["by_channel"])
@@ -744,9 +791,6 @@ async def get_stats(db: AsyncSession) -> dict[str, Any]:
             db, "COALESCE(country, '??')", "country", *window_30, limit=10
         ),
         "sport_countries": await _sport_countries(db, *window_30),
-        "signup_sources": summarize_signup_sources(
-            await _signup_attribution(db, *window_30)
-        ),
         "domains": await _top_list(db, "COALESCE(domain, 'unknown')", "domain", *window_30, limit=5),
         "bots": {
             "today": await _bot_hits(db, today, today),
@@ -814,9 +858,7 @@ async def build_daily_report(db: AsyncSession, report_date: Optional[date] = Non
         # Seven days, not one: a single day per sport per country is too
         # thin to read.
         "sport_countries_7d": await _sport_countries(db, week_ago, report_date),
-        "signup_sources_7d": summarize_signup_sources(
-            await _signup_attribution(db, week_ago, report_date)
-        ),
+        "signup_sources_7d": await _signup_sources_summary_safe(db, week_ago, report_date),
         "bots": await _bot_hits(db, report_date, report_date, limit=10),
         "anomaly_signals": {
             "direct_one_page": day["direct_one_page"],
