@@ -4,6 +4,7 @@
 
 Doyle's rulings (2026-11-13, relayed by Portfolio):
 - One **Pro** plan covers every sport except tennis.
+- **Soccer is in Pro** (Doyle, 2026-11-14: "i think soccer will be in pro"). Recorded for when the paid plan resumes; nothing is built. Whether golf is in Pro is still open.
 - **Tennis** is a separate, higher tier, priced by Doyle.
 - A **Pro + Tennis bundle**, monthly or annual.
 - **No day pass and no season pass.**
