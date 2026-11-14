@@ -128,28 +128,38 @@ class CognitoService:
             raise ValueError("Unable to find appropriate signing key")
         
         try:
-            # Verify and decode the token
+            # Verify the signature, issuer and expiry exactly as before. The
+            # audience is checked by hand below, because Cognito puts the app
+            # client in `aud` on an ID token and in `client_id` on an access
+            # token, and more than one app client is allowed.
             claims = jwt.decode(
                 token,
                 signing_key,
                 algorithms=["RS256"],
-                audience=self.settings.cognito_client_id,
                 issuer=self.settings.cognito_issuer,
                 options={
                     "verify_signature": True,
-                    "verify_aud": True,
+                    "verify_aud": False,
                     "verify_iss": True,
                     "verify_exp": True,
                     "require_exp": True,
                     "require_sub": True,
                 },
             )
-            
-            # Validate token_use claim (should be "id" for ID tokens)
+
+            allowed = self.settings.cognito_client_id_allowlist
             token_use = claims.get("token_use")
-            if token_use not in ("id", "access"):
+            if token_use == "id":
+                aud = claims.get("aud")
+                audiences = aud if isinstance(aud, list) else [aud]
+                if not any(isinstance(a, str) and a in allowed for a in audiences):
+                    raise ValueError("Token audience is not an allowed client")
+            elif token_use == "access":
+                if claims.get("client_id") not in allowed:
+                    raise ValueError("Token client_id is not an allowed client")
+            else:
                 raise ValueError(f"Invalid token_use: {token_use}")
-            
+
             logger.debug(f"Successfully validated token for user: {claims.get('sub')}")
             return claims
             

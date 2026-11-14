@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     cognito_user_pool_id: str
     cognito_client_id: str
     cognito_region: str = "us-east-1"
+    # Comma-separated app clients whose tokens the API accepts (the website,
+    # then the mobile app's "predictium-mobile"). Empty means the single
+    # COGNITO_CLIENT_ID, exactly as before.
+    cognito_client_ids: str = ""
 
     # Stripe
     stripe_secret_key: str
@@ -67,6 +71,12 @@ class Settings(BaseSettings):
     def cognito_issuer(self) -> str:
         """Construct the Cognito issuer URL."""
         return f"https://cognito-idp.{self.cognito_region}.amazonaws.com/{self.cognito_user_pool_id}"
+
+    @property
+    def cognito_client_id_allowlist(self) -> frozenset:
+        """The app clients whose tokens are accepted."""
+        listed = [c.strip() for c in (self.cognito_client_ids or "").split(",") if c.strip()]
+        return frozenset(listed or ([self.cognito_client_id] if self.cognito_client_id else []))
 
     @property
     def cognito_jwks_url(self) -> str:
