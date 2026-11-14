@@ -365,6 +365,51 @@ def test_cancellation_returns_the_user_to_free(world, monkeypatch):
     assert (row.plan, row.status) == ("free", "canceled") and row.entitlements == frozenset()
 
 
+def _subscribe_cancel_resubscribe(w, monkeypatch, plan="pro_monthly", price="price_pro_m"):
+    """Check out, activate, cancel, then check out again, all through the
+    real routes and webhook handler. Returns (first, second) checkout params."""
+    assert w.client.post("/billing/create-checkout-session", json={"plan": plan}).status_code == 200
+    first = checkout_params(w)
+    done = {"id": "evt_c1", "type": "checkout.session.completed",
+            "data": {"object": {"id": "cs_1", "mode": "subscription", "subscription": "sub_1",
+                                "customer": "cus_1", "client_reference_id": str(w.user.id)}}}
+    assert post_event(w, monkeypatch, done, stripe_sub(price=price)).status_code == 200
+    assert w.row().plan == plan
+    gone = {"id": "evt_c2", "type": "customer.subscription.deleted",
+            "data": {"object": {"id": "sub_1", "customer": "cus_1"}}}
+    assert post_event(w, monkeypatch, gone, stripe_sub(status="canceled", price=price)).status_code == 200
+    assert (w.row().plan, w.row().status) == ("free", "canceled")
+    r = w.client.post("/billing/create-checkout-session", json={"plan": plan})
+    assert r.status_code == 200, r.text
+    return first, checkout_params(w)
+
+
+def test_founder_keeps_50_percent_after_cancel_and_resubscribe(monkeypatch, settings):
+    # Doyle, 2026-11-14: "a founder should keep the 50% even if they cancel".
+    # Founder status belongs to the user (signed up before the cutoff), not to
+    # the subscription, so it survives a cancellation and comes back at checkout.
+    monkeypatch.setattr(settings, "founder_cutoff_utc", "2026-12-07T00:00:00Z")
+    w = World(monkeypatch, settings, user_created_at=datetime(2026, 11, 10, tzinfo=timezone.utc))
+    first, second = _subscribe_cancel_resubscribe(w, monkeypatch)
+    assert first["discounts"] == second["discounts"] == [{"coupon": "FOUNDER50"}]
+    assert "allow_promotion_codes" not in second
+    # Same Stripe customer: no second customer is created on the way back.
+    assert second["customer"] == "cus_1"
+    assert [c for c in w.calls if c[0] == "customer"] == [("customer", "a@example.com", str(w.user.id))]
+    # Lapsed, the user still reads as a founder.
+    ent = w.client.get("/billing/entitlements").json()
+    assert ent["founder"] is True and ent["paid"] is False
+
+
+def test_non_founder_still_pays_full_price_after_cancel_and_resubscribe(monkeypatch, settings):
+    monkeypatch.setattr(settings, "founder_cutoff_utc", "2026-12-07T00:00:00Z")
+    w = World(monkeypatch, settings, user_created_at=datetime(2026, 12, 8, tzinfo=timezone.utc))
+    first, second = _subscribe_cancel_resubscribe(w, monkeypatch)
+    assert "discounts" not in first and "discounts" not in second
+    assert second["allow_promotion_codes"] is True
+    assert w.client.get("/billing/entitlements").json()["founder"] is False
+
+
 def test_payment_failure_marks_past_due_and_locks(world, monkeypatch):
     world.set_row(stripe_customer_id="cus_1", stripe_subscription_id="sub_1", plan="pro_monthly")
     event = {"id": "evt_4", "type": "invoice.payment_failed",
