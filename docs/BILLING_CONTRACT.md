@@ -99,6 +99,7 @@ This also changes the legacy `has_premium_access`. A coupon trial whose `trial_e
 - At launch, set it to the launch instant. Users created before then keep founder status; no migration and no new column are needed.
 - **A founder keeps 50% after cancelling** (Doyle, 2026-11-14: "a founder should keep the 50% even if they cancel"). Founder status belongs to the user, not to the subscription. It is computed from the sign-up date on every checkout, so a founder who cancels and comes back resubscribes with FOUNDER50 on the same Stripe customer. `test_founder_keeps_50_percent_after_cancel_and_resubscribe` runs checkout, activation, cancellation and a second checkout through the real routes and webhook handler. Its twin test shows a non-founder still pays full price.
 - **Never move `FOUNDER_CUTOFF_UTC` once it is set.** It is the founder record. Moving it earlier would quietly take 50% away from founders, including founders who are between subscriptions.
+- **Agreed follow-up, not built (Portfolio, 2026-11-14):** when billing resumes, store a permanent founder flag on the user at their first checkout. After that, a later edit to the cutoff can never take founder status away from anyone. It is one column plus a migration. The flag is set once and never cleared, and `is_founder` reads it first.
 
 `FOUNDER_CUTOFF_UTC` is validated when settings load: a malformed value stops startup, rather than failing every billing read.
 
