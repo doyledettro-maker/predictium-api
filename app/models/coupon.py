@@ -4,11 +4,12 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
+from app.models.plans import BETA_DEFAULT, check_sql
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -34,6 +35,9 @@ class Coupon(Base):
     """
 
     __tablename__ = "coupons"
+    # Mirrors migration 011. A redeemed coupon's plan is copied onto the
+    # subscription, so both columns allow the same values.
+    __table_args__ = (CheckConstraint(check_sql(), name="coupons_plan_check"),)
 
     code: Mapped[str] = mapped_column(
         String,
@@ -46,7 +50,7 @@ class Coupon(Base):
     plan: Mapped[str] = mapped_column(
         String,
         nullable=False,
-        default="premium",
+        default=BETA_DEFAULT,
     )
     trial_days: Mapped[int] = mapped_column(
         Integer,

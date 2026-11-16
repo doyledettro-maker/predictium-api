@@ -144,3 +144,47 @@ None of these have been run. Each needs a person with production access.
   late webhook can be matched and its subscription cancelled.
 - **Missing Authorization header.** This is now 401 on every route. It used
   to be FastAPI's 422.
+
+## Plan constraints (migration 011, after the 2026-11-16 rollback)
+
+The deploy of f034012b was rolled back to a69143f. The smoke test's first
+`POST /devices` returned a 500 because `subscriptions_plan_check` (from
+Predictium_Front_End migration 002) allows only `free`, `pro` and `elite`,
+and first login writes `premium`. Checkout and the Stripe webhooks write
+`pro_weekly`, `pro_monthly`, `pro_season` and `data_api`. Coupons have the
+same check (migration 003), and a redeemed coupon's plan is copied onto the
+subscription.
+
+Migration 011 replaces both checks with the union, which keeps the legacy
+values: `free`, `premium`, `pro_weekly`, `pro_monthly`, `pro_season`,
+`data_api`, `pro`, `elite`.
+- It drops any CHECK on the `plan` column alone, whatever its name, and adds
+  the new one `NOT VALID` in the same short transaction (`lock_timeout` 5s).
+  It then runs `VALIDATE` under a lock that lets reads and writes continue.
+- It is idempotent and skips a missing table.
+- `app/models/plans.py` holds the same list. `app/tests/test_plan_constraint.py`
+  derives every plan the code writes and fails if the schema or the
+  migration would refuse one.
+
+This only lets the schema accept values the code already writes. Paid
+plans and pricing stay on hold.
+
+If first-login account setup is refused by the database anyway, the
+request now answers 503 "Your account could not be set up right now.
+Please try again later." instead of a raw 500. Nothing is left
+half-created. If a parallel first request already created the user, that
+user is used.
+
+### Deploy order
+
+1. Run 011 on the production database:
+   `psql -v ON_ERROR_STOP=1 -f database/migrations/011_plan_check_constraints.sql`.
+   If it stops on the lock timeout, run it again. Then check that both
+   constraints show `convalidated = true` (the query is at the end of the
+   file). 011 also fixes live a69143f for new users and paid checkouts, so
+   it can go first on its own.
+2. Deploy the API build (f034012b plus this change).
+3. Repeat the same smoke test: `POST /devices`, `DELETE /devices/{id}`,
+   `DELETE /me`, website sign-in.
+4. On any failure, roll back to a69143f. 011 can stay, because a69143f
+   writes the same plan values.
