@@ -139,7 +139,7 @@ shape `AWY@HOM_YYYY-MM-DD`; anything else is a 404.
 | `AWS_ACCESS_KEY_ID` | AWS access key | No* |
 | `AWS_SECRET_ACCESS_KEY` | AWS secret key | No* |
 | `AWS_REGION` | AWS region for S3 | Yes |
-| `ALLOWED_ORIGINS` | CORS origins (comma-separated) | Yes |
+| `ALLOWED_ORIGINS` | CORS origins (comma-separated). Production: `https://www.predictium.ai,https://predictium.ai`. Unset, it defaults to `http://localhost:3000` and the site's browser calls fail; the API logs a warning at startup when `APP_ENV` is not `development` | Yes |
 | `APP_ENV` | Environment (development/production) | No |
 | `LOG_LEVEL` | Logging level | No |
 

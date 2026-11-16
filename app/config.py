@@ -87,6 +87,26 @@ class Settings(BaseSettings):
         """Construct the Cognito JWKS URL."""
         return f"{self.cognito_issuer}/.well-known/jwks.json"
 
+    def cors_origins_warning(self) -> str | None:
+        """A startup warning when a non-development server would refuse the
+        site's own browser calls: ALLOWED_ORIGINS unset, or every origin a
+        localhost one. Logged only; behaviour is unchanged (2026-11-16: the
+        production API ran on the localhost default and every call from
+        www.predictium.ai failed its CORS preflight)."""
+        if self.app_env.lower() == "development":
+            return None
+        origins = self.cors_origins
+        local = all(
+            (urlsplit(o).hostname or "") in {"localhost", "127.0.0.1"} for o in origins
+        )
+        if "allowed_origins" in self.model_fields_set and not local:
+            return None
+        why = "ALLOWED_ORIGINS is not set" if "allowed_origins" not in self.model_fields_set else "ALLOWED_ORIGINS lists only localhost origins"
+        return (
+            f"{why} (APP_ENV={self.app_env}); CORS allows only {origins}, so browser "
+            "calls from the site will fail. Set ALLOWED_ORIGINS=https://www.predictium.ai,https://predictium.ai."
+        )
+
     @property
     def is_production(self) -> bool:
         """Check if running in production environment."""

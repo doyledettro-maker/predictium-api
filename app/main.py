@@ -76,6 +76,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Startup
     logger.info(f"Starting Predictium API ({settings.app_env})")
     logger.info(f"CORS origins: {settings.cors_origins}")
+    cors_warning = settings.cors_origins_warning()
+    if cors_warning:
+        logger.warning(cors_warning)
 
     # Ensure the analytics table exists (idempotent; canonical DDL also lives
     # in Predictium_Front_End/database/migrations/006_page_views.sql)
