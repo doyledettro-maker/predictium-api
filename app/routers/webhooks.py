@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
+from app.services.account_deletion import LateCancelFailed
 from app.services.stripe_service import stripe_service
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,14 @@ async def handle_stripe_webhook(
             await stripe_service.handle_subscription_deleted(event, db)
         else:
             logger.debug(f"Unhandled webhook event type: {event_type}")
+    except LateCancelFailed:
+        # A deleted account's subscription is still billing and Stripe would
+        # not cancel it. Answer 5xx so Stripe sends the event again.
+        logger.error(f"Webhook {event_type}: cancel for a deleted account failed, asking Stripe to retry")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Temporary failure, retry",
+        )
     except Exception as e:
         logger.error(f"Error processing webhook {event_type}: {e}")
         # Don't raise - return 200 to prevent Stripe retries

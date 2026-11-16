@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS account_deletions (
     CONSTRAINT account_deletions_sub_hash_key UNIQUE (sub_hash)
 );
 
+-- A database that ran an earlier draft of this file (numbered 001) has the
+-- table without this column; CREATE TABLE IF NOT EXISTS would not add it.
+ALTER TABLE account_deletions ADD COLUMN IF NOT EXISTS stripe_customer_hash VARCHAR(64);
+
 CREATE INDEX IF NOT EXISTS ix_account_deletions_stripe_customer_hash
     ON account_deletions (stripe_customer_hash);
 

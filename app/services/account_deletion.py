@@ -47,6 +47,11 @@ REVENUECAT_API = "https://api.revenuecat.com/v1"
 BILLABLE = {"active", "trialing", "past_due", "unpaid", "paused"}
 
 
+class LateCancelFailed(Exception):
+    """Stripe refused to cancel a deleted account's subscription. The webhook
+    answers 5xx so Stripe retries the event instead of the plan billing on."""
+
+
 class DeletionStepFailed(Exception):
     def __init__(self, step: str):
         super().__init__(step)
@@ -174,8 +179,13 @@ def cancel_subscription_now(subscription_id: str) -> None:
         stripe.Subscription.cancel(subscription_id)
         logger.info("Cancelled a subscription of a deleted account")
     except stripe.InvalidRequestError as e:
-        if getattr(e, "code", None) != "resource_missing":
-            raise
+        if getattr(e, "code", None) == "resource_missing":
+            return
+        logger.warning("Cancel for a deleted account failed (%s)", type(e).__name__)
+        raise LateCancelFailed() from e
+    except stripe.StripeError as e:
+        logger.warning("Cancel for a deleted account failed (%s)", type(e).__name__)
+        raise LateCancelFailed() from e
 
 
 def _cognito_client():
