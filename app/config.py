@@ -10,6 +10,10 @@ from urllib.parse import quote, urlsplit, urlunsplit
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Hosts that only the machine itself can serve a browser page from.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
@@ -89,21 +93,38 @@ class Settings(BaseSettings):
 
     def cors_origins_warning(self) -> str | None:
         """A startup warning when a non-development server would refuse the
-        site's own browser calls: ALLOWED_ORIGINS unset, or every origin a
-        localhost one. Logged only; behaviour is unchanged (2026-11-16: the
+        site's own browser calls: ALLOWED_ORIGINS unset, empty, or listing only
+        local origins. Logged only; behaviour is unchanged (2026-11-16: the
         production API ran on the localhost default and every call from
-        www.predictium.ai failed its CORS preflight)."""
+        www.predictium.ai failed its CORS preflight). Never raises: an origin
+        urlsplit cannot parse (e.g. "http://[::1") counts as not local and is
+        named in the warning, since the server starts with it either way."""
         if self.app_env.lower() == "development":
             return None
-        origins = self.cors_origins
-        local = all(
-            (urlsplit(o).hostname or "") in {"localhost", "127.0.0.1"} for o in origins
-        )
-        if "allowed_origins" in self.model_fields_set and not local:
+        origins = [o for o in self.cors_origins if o]
+        unparseable: list[str] = []
+        local = True
+        for o in origins:
+            try:
+                host = urlsplit(o).hostname or ""
+            except ValueError:
+                unparseable.append(o)
+                local = False
+                continue
+            if host not in _LOCAL_HOSTS:
+                local = False
+        if "allowed_origins" not in self.model_fields_set:
+            why = "ALLOWED_ORIGINS is not set"
+        elif not origins:
+            why = "ALLOWED_ORIGINS is empty"
+        elif unparseable:
+            why = f"ALLOWED_ORIGINS has origins that cannot be parsed: {unparseable}"
+        elif local:
+            why = "ALLOWED_ORIGINS lists only local origins"
+        else:
             return None
-        why = "ALLOWED_ORIGINS is not set" if "allowed_origins" not in self.model_fields_set else "ALLOWED_ORIGINS lists only localhost origins"
         return (
-            f"{why} (APP_ENV={self.app_env}); CORS allows only {origins}, so browser "
+            f"{why} (APP_ENV={self.app_env}); CORS allows only {self.cors_origins}, so browser "
             "calls from the site will fail. Set ALLOWED_ORIGINS=https://www.predictium.ai,https://predictium.ai."
         )
 

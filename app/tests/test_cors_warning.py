@@ -29,7 +29,7 @@ def test_unset_outside_development_warns(monkeypatch):
 
 def test_localhost_only_outside_development_warns(monkeypatch):
     w = make(monkeypatch, APP_ENV="production", ALLOWED_ORIGINS="http://localhost:3000, http://127.0.0.1:3000").cors_origins_warning()
-    assert w and "only localhost" in w
+    assert w and "only local origins" in w
 
 
 @pytest.mark.parametrize("origins", [
@@ -40,3 +40,24 @@ def test_site_origin_set_is_quiet(monkeypatch, origins):
     s = make(monkeypatch, APP_ENV="production", ALLOWED_ORIGINS=origins)
     assert s.cors_origins_warning() is None
     assert "https://www.predictium.ai" in s.cors_origins
+
+
+@pytest.mark.parametrize("origins", [
+    "http://[::1",
+    "http://localhost:3000,https://www.predictium.ai]",
+])
+def test_malformed_origin_never_raises(monkeypatch, origins):
+    w = make(monkeypatch, APP_ENV="production", ALLOWED_ORIGINS=origins).cors_origins_warning()
+    assert w and "cannot be parsed" in w
+
+
+@pytest.mark.parametrize("origins", ["", " , "])
+def test_empty_value_warns(monkeypatch, origins):
+    w = make(monkeypatch, APP_ENV="production", ALLOWED_ORIGINS=origins).cors_origins_warning()
+    assert w and "empty" in w
+
+
+@pytest.mark.parametrize("origins", ["http://0.0.0.0:8000", "http://[::1]:3000", "http://localhost:3000,http://[::1]:3000"])
+def test_other_local_hosts_count_as_local(monkeypatch, origins):
+    w = make(monkeypatch, APP_ENV="production", ALLOWED_ORIGINS=origins).cors_origins_warning()
+    assert w and "only local origins" in w
