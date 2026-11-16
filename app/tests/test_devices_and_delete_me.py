@@ -173,7 +173,7 @@ def env(monkeypatch, tmp_path):
     stripe_subs = {}  # plain dicts here; every fake returns a real Stripe object
 
     def _obj(d):
-        # stripe-python 13+ objects are not dicts: .get() raises on them.
+        # stripe-python 15+ objects are not dicts: .get() raises on them.
         return stripe.Subscription.construct_from(dict(d), "sk_test_dummy")
 
     class _Page:
@@ -639,10 +639,13 @@ def test_missing_page_views_table_is_skipped_not_a_failure(env):
 
 # --- Stripe objects and webhooks -------------------------------------------
 # Real stripe.StripeObject instances (construct_from), never plain dicts:
-# from stripe-python 13 they have no .get().
+# from stripe-python 15 they have no .get().
 
 from app.services.stripe_fields import field, period_end  # noqa: E402
 from app.services.stripe_service import stripe_service  # noqa: E402
+
+
+STRIPE_MAJOR = int(stripe.VERSION.split(".")[0])
 
 
 def _event(kind, obj):
@@ -658,8 +661,11 @@ def test_field_and_period_end_on_real_stripe_objects():
         {"id": "sub_2", "status": "active",
          "items": {"object": "list", "data": [{"id": "si_1", "current_period_end": 1800000500}]}},
         "sk_test_dummy")
-    with pytest.raises(AttributeError):
-        old_shape.get("status")  # the trap this helper exists for
+    if STRIPE_MAJOR >= 15:
+        with pytest.raises(AttributeError):
+            old_shape.get("status")  # the trap this helper exists for
+    else:
+        assert old_shape.get("status") == "active"  # still a dict before 15
     assert field(old_shape, "status") == "active"
     assert field(old_shape, "trial_end") is None and field(None, "x", 3) == 3
     assert period_end(old_shape) == datetime.fromtimestamp(1800000000, tz=timezone.utc)
@@ -772,3 +778,99 @@ def test_webhook_for_an_unknown_customer_does_nothing(env):
         "sk_test_dummy")
     env.run(lambda db: stripe_service.handle_checkout_completed(_event("checkout.session.completed", session), db))
     assert env.calls["cancel"] == [] and env.calls["retrieve"] == []
+
+
+# --- webhook retries for a deleted account ---------------------------------
+
+
+def _late_checkout_event():
+    session = stripe.checkout.Session.construct_from(
+        {"id": "cs_9", "customer": "cus_1", "subscription": "sub_late", "mode": "subscription"},
+        "sk_test_dummy")
+    return _event("checkout.session.completed", session)
+
+
+def _post_webhook(env, monkeypatch, event):
+    monkeypatch.setattr(stripe_service, "verify_webhook_signature", lambda payload, signature: event)
+    return env.client.post("/webhooks/stripe", content=b"{}", headers={"Stripe-Signature": "t=1,v1=x"})
+
+
+@pytest.mark.parametrize("error", [
+    stripe.APIConnectionError("network down"),
+    stripe.InvalidRequestError("Subscription is locked", "id", code="resource_locked"),
+])
+def test_failed_cancel_for_deleted_account_answers_5xx_so_stripe_retries(env, monkeypatch, error):
+    _deleted_customer(env)
+
+    def refuse(sid, **kw):
+        env.calls["cancel"].append(sid)
+        raise error
+    monkeypatch.setattr(stripe.Subscription, "cancel", refuse)
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 503
+    assert env.calls["cancel"] == ["sub_late"]
+
+
+def test_cancel_of_an_already_gone_subscription_answers_200(env, monkeypatch):
+    _deleted_customer(env)
+
+    def gone(sid, **kw):
+        env.calls["cancel"].append(sid)
+        raise stripe.InvalidRequestError("No such subscription", "id", code="resource_missing")
+    monkeypatch.setattr(stripe.Subscription, "cancel", gone)
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 200 and r.json() == {"received": "true"}
+
+
+def test_late_cancel_that_works_answers_200(env, monkeypatch):
+    _deleted_customer(env)
+    env.stripe_subs["sub_late"] = {"id": "sub_late", "customer": "cus_1", "status": "active",
+                                   "cancel_at_period_end": False}
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 200 and env.calls["cancel"] == ["sub_late"]
+
+
+def test_other_webhook_errors_still_answer_200(env, monkeypatch):
+    """Unchanged behaviour for every other failure: logged, 200, no retry."""
+    async def boom(event, db):
+        raise RuntimeError("unrelated bug")
+    monkeypatch.setattr(stripe_service, "handle_checkout_completed", boom)
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 200
+
+
+# --- migration 009 on a database that ran the earlier 001 --------------------
+
+
+@pytest.mark.skipif(not PG_URL, reason="TEST_PG_URL not set")
+def test_migration_009_adds_the_column_to_an_old_account_deletions_table():
+    async def go():
+        engine = create_async_engine(PG_URL, poolclass=NullPool)
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text(_DROP))
+                await conn.run_sync(Base.metadata.create_all, tables=[User.__table__])
+                # account_deletions exactly as the earlier 001 created it
+                await conn.execute(text(
+                    "CREATE TABLE account_deletions (id BIGSERIAL PRIMARY KEY, "
+                    "sub_hash VARCHAR(64) NOT NULL, deleted_at TIMESTAMPTZ NOT NULL DEFAULT now(), "
+                    "CONSTRAINT account_deletions_sub_hash_key UNIQUE (sub_hash))"))
+                raw = (await conn.get_raw_connection()).driver_connection
+                sql = (MIGRATIONS / "009_push_devices_and_account_deletions.sql").read_text()
+                sql = sql.replace("BEGIN;", "").replace("COMMIT;", "")
+                await raw.execute(sql)
+                await raw.execute(sql)  # idempotent
+                cols = (await conn.execute(text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name = 'account_deletions'"))).scalars().all()
+                idx = (await conn.execute(text(
+                    "SELECT indexname FROM pg_indexes WHERE tablename = 'account_deletions'"))).scalars().all()
+            return set(cols), set(idx)
+        finally:
+            async with engine.begin() as conn:
+                await conn.execute(text(_DROP))
+            await engine.dispose()
+
+    cols, idx = asyncio.run(go())
+    assert "stripe_customer_hash" in cols
+    assert "ix_account_deletions_stripe_customer_hash" in idx

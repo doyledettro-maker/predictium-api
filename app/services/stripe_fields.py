@@ -1,6 +1,6 @@
 """Reading fields off Stripe objects the same way on every stripe-python version.
 
-From stripe-python 13 a StripeObject is not a dict: `.get()` raises
+From stripe-python 15 a StripeObject is not a dict: `.get()` raises
 AttributeError. Indexing and `in` work on every version, and on the plain
 dicts tests use. Never call `.get()` on a Stripe object; use `field()`.
 """

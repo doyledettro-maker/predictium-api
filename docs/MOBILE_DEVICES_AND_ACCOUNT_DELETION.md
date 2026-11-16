@@ -67,11 +67,11 @@ the hashed customer id on `account_deletions`.
 ## Stripe library
 
 Stripe objects are read by key through `app/services/stripe_fields.py`.
-From stripe-python 13, `.get()` raises AttributeError on them. From 12,
+From stripe-python 15, `.get()` raises AttributeError on them. From 12,
 the pinned API version moved `current_period_end` onto the subscription
 items. Both are handled, and `requirements.txt` caps stripe below 18
 (tested on 17.0.0). I could not see which version the live image runs. A
-build on 13 or later without this PR would break the existing
+build on 12 or later without this PR would break the existing
 `handle_checkout_completed` and `handle_subscription_updated` on website
 checkouts. Each webhook would be logged as an error and return 200, and
 the plan would not update.
