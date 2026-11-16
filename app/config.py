@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     stripe_season_price_id: str = ""
     stripe_data_api_price_id: str = ""
 
+    # RevenueCat (mobile in-app purchases). DELETE /me uses the secret key to
+    # delete the subscriber keyed on the Cognito sub. Empty skips that step.
+    revenuecat_secret_key: str = ""
+
     # AWS S3
     s3_predictions_bucket: str = "predictium-predictions"
     aws_access_key_id: str = ""

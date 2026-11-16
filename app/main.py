@@ -12,24 +12,31 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.config import get_settings
-from app.db.database import engine
+from app.db.database import async_session_maker, engine
 from app.models.page_view import PageView
 from app.models.twitter_follower_snapshot import TwitterFollowerSnapshot
 from app.routers import (
     analytics_router,
     auth_router,
     billing_router,
+    devices_router,
     health_router,
+    me_router,
     meta_router,
     predictions_router,
     webhooks_router,
 )
 from app.services.cognito import cognito_service
+from app.routers.devices import prune_stale_devices
 from app.services.report_scheduler import daily_report_loop
 
 # Configure logging
@@ -38,6 +45,21 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+async def stale_device_loop() -> None:
+    """Once a day, delete push devices not seen for 30 days."""
+    import asyncio
+
+    while True:
+        try:
+            async with async_session_maker() as db:
+                removed = await prune_stale_devices(db)
+            if removed:
+                logger.info("Pruned %d stale push device(s)", removed)
+        except Exception as e:  # table missing before the migration, DB down
+            logger.warning("Stale device prune skipped (%s)", type(e).__name__)
+        await asyncio.sleep(24 * 3600)
 
 
 @asynccontextmanager
@@ -78,12 +100,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception:
             logger.exception("Analytics startup failed; analytics endpoints may be degraded")
 
+    import asyncio
+
+    prune_task = asyncio.create_task(stale_device_loop())
+
     yield
 
     # Shutdown
     logger.info("Shutting down Predictium API")
     if report_task:
         report_task.cancel()
+    prune_task.cancel()
     await cognito_service.close()
 
 
@@ -108,6 +135,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """On /devices, a 422 never echoes what was sent: it could be a push token."""
+    if request.url.path.startswith("/devices"):
+        errors = [
+            {k: v for k, v in err.items() if k in ("type", "loc", "msg")}
+            for err in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+    return await request_validation_exception_handler(request, exc)
+
+
 # Include routers
 app.include_router(health_router)
 app.include_router(meta_router)
@@ -116,6 +155,8 @@ app.include_router(predictions_router)
 app.include_router(billing_router)
 app.include_router(webhooks_router)
 app.include_router(analytics_router)
+app.include_router(devices_router)
+app.include_router(me_router)
 
 
 @app.get("/")

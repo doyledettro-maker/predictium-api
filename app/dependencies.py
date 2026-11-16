@@ -3,60 +3,80 @@ FastAPI dependencies for authentication and authorization.
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
+from app.models.account_deletion import AccountDeletion, hash_sub
 from app.models.subscription import Subscription
 from app.models.user import User
-from app.services.cognito import cognito_service
+from app.services.cognito import cognito_service, user_info_from_claims
 
 logger = logging.getLogger(__name__)
 
 
-async def get_current_user(
-    authorization: str = Header(..., description="Bearer token"),
-) -> Dict[str, str]:
-    """
-    Validate JWT token and return user info.
-    
-    Extracts the Bearer token from the Authorization header,
-    validates it with Cognito, and returns user claims.
-    
-    Args:
-        authorization: Authorization header value (Bearer <token>).
-        
-    Returns:
-        Dict with 'sub' (Cognito user ID) and 'email' keys.
-        
-    Raises:
-        HTTPException(401): If token is missing, invalid, or expired.
-    """
-    # Extract Bearer token
+def _bearer_token(authorization: Optional[str]) -> str:
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authorization header format",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
     token = authorization[7:]  # Remove "Bearer " prefix
-    
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+    return token
+
+
+async def get_token_claims(
+    authorization: Optional[str] = Header(None, description="Bearer token"),
+) -> Dict[str, Any]:
+    """
+    Verify the Bearer token with Cognito (signature, issuer, expiry and the
+    app client allowlist) on this request and return all of its claims.
+
+    A missing header is a 401, like a bad token.
+    """
+    token = _bearer_token(authorization)
     try:
-        user_info = await cognito_service.get_user_info(token)
-        return user_info
+        return await cognito_service.validate_token(token)
     except ValueError as e:
         logger.warning(f"Token validation failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+async def get_current_user(
+    claims: Dict[str, Any] = Depends(get_token_claims),
+) -> Dict[str, str]:
+    """
+    Validate JWT token and return user info.
+
+    Returns:
+        Dict with 'sub' (Cognito user ID) and 'email' keys.
+
+    Raises:
+        HTTPException(401): If token is missing, invalid, or expired.
+    """
+    try:
+        return user_info_from_claims(claims)
+    except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
@@ -93,6 +113,17 @@ async def get_current_user_with_db(
     user = result.scalar_one_or_none()
     
     if not user:
+        # A deleted account's token stays valid until it expires. It must not
+        # quietly bring the user back.
+        deleted = await db.execute(
+            select(AccountDeletion.id).where(AccountDeletion.sub_hash == hash_sub(cognito_id))
+        )
+        if deleted.first() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="This account was deleted",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         # Create new user on first login
         user = User(
             cognito_id=cognito_id,
