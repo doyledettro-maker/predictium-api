@@ -52,6 +52,9 @@ database_url, connect_args = _engine_options(settings.effective_database_url)
 engine = create_async_engine(
     database_url,
     echo=not settings.is_production,
+    # Keep bound values out of SQL echo and out of DB error messages, so a
+    # push token (or any other value) never reaches a log line.
+    hide_parameters=True,
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,

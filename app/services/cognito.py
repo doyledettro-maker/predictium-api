@@ -172,37 +172,26 @@ class CognitoService:
 
     async def get_user_info(self, token: str) -> Dict[str, str]:
         """
-        Extract user info from a validated token.
-        
-        Args:
-            token: The JWT token to extract info from.
-            
-        Returns:
-            Dict with 'sub' (user ID) and 'email' keys.
-            
+        Extract user info ('sub' and 'email') from a validated token.
+
         Raises:
             ValueError: If token validation fails or required claims are missing.
         """
-        claims = await self.validate_token(token)
-        
-        sub = claims.get("sub")
-        email = claims.get("email")
-        
-        if not sub:
-            raise ValueError("Token missing 'sub' claim")
-        if not email:
-            # Try to get email from cognito:username if email isn't present
-            email = claims.get("cognito:username", "")
-        
-        return {
-            "sub": sub,
-            "email": email,
-        }
+        return user_info_from_claims(await self.validate_token(token))
 
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
+
+
+def user_info_from_claims(claims: Dict[str, Any]) -> Dict[str, str]:
+    """The 'sub' and 'email' of verified claims (email falls back to the username)."""
+    sub = claims.get("sub")
+    if not sub:
+        raise ValueError("Token missing 'sub' claim")
+    email = claims.get("email") or claims.get("cognito:username", "")
+    return {"sub": sub, "email": email}
 
 
 # Global service instance
