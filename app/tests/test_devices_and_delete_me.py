@@ -790,6 +790,11 @@ def _late_checkout_event():
     return _event("checkout.session.completed", session)
 
 
+def _late_sub(env, status="active"):
+    env.stripe_subs["sub_late"] = {"id": "sub_late", "customer": "cus_1", "status": status,
+                                   "cancel_at_period_end": False}
+
+
 def _post_webhook(env, monkeypatch, event):
     monkeypatch.setattr(stripe_service, "verify_webhook_signature", lambda payload, signature: event)
     return env.client.post("/webhooks/stripe", content=b"{}", headers={"Stripe-Signature": "t=1,v1=x"})
@@ -801,6 +806,7 @@ def _post_webhook(env, monkeypatch, event):
 ])
 def test_failed_cancel_for_deleted_account_answers_5xx_so_stripe_retries(env, monkeypatch, error):
     _deleted_customer(env)
+    _late_sub(env)
 
     def refuse(sid, **kw):
         env.calls["cancel"].append(sid)
@@ -812,7 +818,9 @@ def test_failed_cancel_for_deleted_account_answers_5xx_so_stripe_retries(env, mo
 
 
 def test_cancel_of_an_already_gone_subscription_answers_200(env, monkeypatch):
+    """Gone between our read and the cancel (a race): still done."""
     _deleted_customer(env)
+    _late_sub(env)
 
     def gone(sid, **kw):
         env.calls["cancel"].append(sid)
@@ -820,6 +828,50 @@ def test_cancel_of_an_already_gone_subscription_answers_200(env, monkeypatch):
     monkeypatch.setattr(stripe.Subscription, "cancel", gone)
     r = _post_webhook(env, monkeypatch, _late_checkout_event())
     assert r.status_code == 200 and r.json() == {"received": "true"}
+    assert env.calls["cancel"] == ["sub_late"]
+
+
+def test_subscription_unknown_to_stripe_answers_200_without_cancel(env, monkeypatch):
+    _deleted_customer(env)  # sub_late was never created in the fake Stripe
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 200
+    assert env.calls["retrieve"][-1] == "sub_late" and env.calls["cancel"] == []
+
+
+@pytest.mark.parametrize("status", ["canceled", "incomplete_expired"])
+def test_already_ended_subscription_is_not_cancelled_again(env, monkeypatch, status):
+    _deleted_customer(env)
+    _late_sub(env, status=status)
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 200 and env.calls["cancel"] == []
+
+
+def test_lost_cancel_reply_then_retry_answers_200(env, monkeypatch):
+    """The cancel reaches Stripe but the reply is lost: 503 once, then the
+    retried event reads "canceled" and answers 200 without cancelling again."""
+    _deleted_customer(env)
+    _late_sub(env)
+
+    def cancel_then_drop(sid, **kw):
+        env.calls["cancel"].append(sid)
+        env.stripe_subs[sid]["status"] = "canceled"  # Stripe did it
+        raise stripe.APIConnectionError("connection reset")
+    monkeypatch.setattr(stripe.Subscription, "cancel", cancel_then_drop)
+    first = _post_webhook(env, monkeypatch, _late_checkout_event())
+    retry = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert (first.status_code, retry.status_code) == (503, 200)
+    assert env.calls["cancel"] == ["sub_late"]
+
+
+def test_failed_read_before_cancel_answers_5xx(env, monkeypatch):
+    _deleted_customer(env)
+    _late_sub(env)
+
+    def down(sid, **kw):
+        raise stripe.APIConnectionError("network down")
+    monkeypatch.setattr(stripe.Subscription, "retrieve", down)
+    r = _post_webhook(env, monkeypatch, _late_checkout_event())
+    assert r.status_code == 503 and env.calls["cancel"] == []
 
 
 def test_late_cancel_that_works_answers_200(env, monkeypatch):

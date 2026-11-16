@@ -172,10 +172,22 @@ async def is_deleted_customer(db: AsyncSession, customer_id: Optional[str]) -> b
     return found.first() is not None
 
 
+# Statuses after which a subscription can never bill again.
+ENDED = {"canceled", "incomplete_expired"}
+
+
 def cancel_subscription_now(subscription_id: str) -> None:
     """Cancels at once a subscription that started or restarted after its
-    account was deleted. Already gone counts as done."""
+    account was deleted. Already gone, or already ended, counts as done.
+
+    It reads the subscription first: if an earlier attempt's cancel reached
+    Stripe but the reply was lost, the retry sees "canceled" and stops,
+    instead of answering 503 until Stripe's retry window closes.
+    """
     try:
+        current = stripe.Subscription.retrieve(subscription_id)
+        if field(current, "status") in ENDED:
+            return
         stripe.Subscription.cancel(subscription_id)
         logger.info("Cancelled a subscription of a deleted account")
     except stripe.InvalidRequestError as e:
