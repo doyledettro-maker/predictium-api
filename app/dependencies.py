@@ -7,10 +7,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import get_db
 from app.models.account_deletion import AccountDeletion, hash_sub
+from app.models.plans import BETA_DEFAULT
 from app.models.subscription import Subscription
 from app.models.user import User
 from app.services.cognito import cognito_service, user_info_from_claims
@@ -125,25 +127,41 @@ async def get_current_user_with_db(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         # Create new user on first login
-        user = User(
-            cognito_id=cognito_id,
-            email=email,
-            role="subscriber",
-        )
-        db.add(user)
-        await db.flush()  # Generate user.id before creating subscription
-        
-        # Create default subscription
-        # BETA: Auto-grant premium access to all new users
-        # TODO: Change back to plan="free" after beta ends
-        subscription = Subscription(
-            user_id=user.id,
-            plan="premium",
-            status="active",
-        )
-        db.add(subscription)
-        
-        await db.commit()
+        try:
+            user = User(
+                cognito_id=cognito_id,
+                email=email,
+                role="subscriber",
+            )
+            db.add(user)
+            await db.flush()  # Generate user.id before creating subscription
+
+            # Create default subscription
+            # BETA: Auto-grant premium access to all new users
+            # TODO: Change back to plan="free" after beta ends
+            subscription = Subscription(
+                user_id=user.id,
+                plan=BETA_DEFAULT,
+                status="active",
+            )
+            db.add(subscription)
+
+            await db.commit()
+        except IntegrityError as e:
+            # A constraint refused the new rows: a plan the schema does not
+            # allow, an email already on another account, or a second
+            # first-login request that won the race. Answer clearly instead
+            # of a raw 500, and leave nothing half-created.
+            await db.rollback()
+            raced = await db.execute(select(User).where(User.cognito_id == cognito_id))
+            user = raced.scalar_one_or_none()
+            if user is not None:
+                return user  # the other request created it
+            logger.error("First-login account setup refused by the database (%s)", type(e.orig).__name__)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Your account could not be set up right now. Please try again later.",
+            )
         await db.refresh(user)
         logger.info(f"Created new user: {email}")
     

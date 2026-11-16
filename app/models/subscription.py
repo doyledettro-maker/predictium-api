@@ -4,11 +4,12 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
+from app.models.plans import check_sql
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -34,6 +35,8 @@ class Subscription(Base):
     """
 
     __tablename__ = "subscriptions"
+    # Mirrors migration 011, so tests on a create_all schema enforce it too.
+    __table_args__ = (CheckConstraint(check_sql(), name="subscriptions_plan_check"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

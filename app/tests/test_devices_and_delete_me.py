@@ -926,3 +926,37 @@ def test_migration_009_adds_the_column_to_an_old_account_deletions_table():
     cols, idx = asyncio.run(go())
     assert "stripe_customer_hash" in cols
     assert "ix_account_deletions_stripe_customer_hash" in idx
+
+
+# --- first login fails closed -------------------------------------------------
+
+
+def test_first_login_refused_by_the_schema_answers_503_not_500(env, monkeypatch):
+    """The 2026-11-16 smoke-test failure: the subscription insert broke a
+    CHECK constraint and the request ended in a raw 500."""
+    import app.dependencies as deps
+
+    monkeypatch.setattr(deps, "BETA_DEFAULT", "not_a_plan")  # the model's CHECK refuses it
+    r = env.client.post("/devices", json=reg(), headers=auth("sub-new"))
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Your account could not be set up right now. Please try again later."
+    assert _user(env, "sub-new") is None and _devices(env) == {}  # nothing half-created
+
+
+def test_first_login_with_an_email_already_on_another_account_answers_503(env):
+    async def seed(db):
+        db.add(User(cognito_id="sub-old", email="sub-new@example.com"))
+        await db.commit()
+    env.run(seed)
+    r = env.client.post("/devices", json=reg(), headers=auth("sub-new"))
+    assert r.status_code == 503
+    assert _user(env, "sub-new") is None
+
+
+def test_first_login_writes_the_beta_default_plan(env):
+    env.client.post("/devices", json=reg(), headers=auth("sub-new"))
+
+    async def plan(db):
+        user = (await db.execute(select(User).where(User.cognito_id == "sub-new"))).scalar_one()
+        return (await db.execute(select(Subscription).where(Subscription.user_id == user.id))).scalar_one().plan
+    assert env.run(plan) == "premium"
