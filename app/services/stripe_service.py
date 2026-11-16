@@ -19,6 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.subscription import Subscription
 from app.models.user import User
+from app.services import account_deletion
+from app.services.stripe_fields import field, period_end
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +181,8 @@ class StripeService:
         """
         session = event["data"]["object"]
         customer_id = session["customer"]
-        subscription_id = session.get("subscription")
-        mode = session.get("mode", "subscription")
+        subscription_id = field(session, "subscription")
+        mode = field(session, "mode", "subscription")
 
         # Find user by Stripe customer ID
         result = await db.execute(
@@ -191,6 +193,14 @@ class StripeService:
         subscription = result.scalar_one_or_none()
 
         if not subscription:
+            if await account_deletion.is_deleted_customer(db, customer_id):
+                # Checkout finished after the account was deleted (a session
+                # opened before DELETE /me). Stop it billing at once.
+                if mode == "subscription" and subscription_id:
+                    account_deletion.cancel_subscription_now(subscription_id)
+                else:
+                    logger.warning("One-time checkout completed for a deleted account; refund by hand")
+                return
             logger.warning(f"No subscription found for customer: {customer_id}")
             return
 
@@ -219,11 +229,10 @@ class StripeService:
             subscription.stripe_subscription_id = subscription_id
             subscription.plan = plan
             subscription.status = self._stripe_status_to_internal(stripe_sub["status"])
-            subscription.current_period_end = datetime.fromtimestamp(
-                stripe_sub["current_period_end"],
-                tz=timezone.utc,
-            )
-            if stripe_sub.get("trial_end"):
+            end = period_end(stripe_sub)
+            if end is not None:
+                subscription.current_period_end = end
+            if field(stripe_sub, "trial_end"):
                 subscription.trial_ends_at = datetime.fromtimestamp(
                     stripe_sub["trial_end"],
                     tz=timezone.utc,
@@ -260,11 +269,10 @@ class StripeService:
             price_id = stripe_sub["items"]["data"][0]["price"]["id"]
             subscription.plan = self._price_to_plan(price_id)
             subscription.status = self._stripe_status_to_internal(stripe_sub["status"])
-            subscription.current_period_end = datetime.fromtimestamp(
-                stripe_sub["current_period_end"],
-                tz=timezone.utc,
-            )
-            if stripe_sub.get("trial_end"):
+            end = period_end(stripe_sub)
+            if end is not None:
+                subscription.current_period_end = end
+            if field(stripe_sub, "trial_end"):
                 subscription.trial_ends_at = datetime.fromtimestamp(
                     stripe_sub["trial_end"],
                     tz=timezone.utc,
@@ -272,6 +280,15 @@ class StripeService:
             
             await db.commit()
             logger.info(f"Updated subscription: {subscription_id}")
+        elif await account_deletion.is_deleted_customer(db, field(stripe_sub, "customer")):
+            # A deleted account's subscription that can still bill and is not
+            # already set to end (DELETE /me sets cancel_at_period_end, which
+            # itself fires this event): cancel it now.
+            if (
+                field(stripe_sub, "status") in account_deletion.BILLABLE
+                and not field(stripe_sub, "cancel_at_period_end")
+            ):
+                account_deletion.cancel_subscription_now(subscription_id)
         else:
             logger.warning(f"No subscription found for Stripe sub: {subscription_id}")
 

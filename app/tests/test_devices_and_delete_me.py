@@ -123,7 +123,7 @@ async def _create_schema(engine):
         auto = engine.execution_options(isolation_level="AUTOCOMMIT")
         async with auto.connect() as conn:
             raw = (await conn.get_raw_connection()).driver_connection
-            await raw.execute((MIGRATIONS / "002_page_views_user_id_index.sql").read_text())
+            await raw.execute((MIGRATIONS / "010_page_views_user_id_index.sql").read_text())
 
 
 async def _drop_schema(engine):
@@ -169,8 +169,12 @@ def env(monkeypatch, tmp_path):
 
     # Stripe: test-mode key only, every call a mock.
     monkeypatch.setattr(stripe, "api_key", "sk_test_dummy")
-    calls = {"list": [], "modify": [], "retrieve": [], "cognito": [], "revenuecat": []}
-    stripe_subs = {}
+    calls = {"list": [], "modify": [], "retrieve": [], "cancel": [], "cognito": [], "revenuecat": []}
+    stripe_subs = {}  # plain dicts here; every fake returns a real Stripe object
+
+    def _obj(d):
+        # stripe-python 13+ objects are not dicts: .get() raises on them.
+        return stripe.Subscription.construct_from(dict(d), "sk_test_dummy")
 
     class _Page:
         def __init__(self, items):
@@ -182,22 +186,29 @@ def env(monkeypatch, tmp_path):
     def _list(**kw):
         assert stripe.api_key.startswith("sk_test_")
         calls["list"].append(kw)
-        return _Page([s for s in stripe_subs.values() if s["customer"] == kw["customer"]])
+        return _Page([_obj(s) for s in stripe_subs.values() if s["customer"] == kw["customer"]])
 
     def _modify(sid, **kw):
         assert stripe.api_key.startswith("sk_test_")
         calls["modify"].append((sid, kw))
         stripe_subs[sid]["cancel_at_period_end"] = kw.get("cancel_at_period_end")
-        return stripe_subs[sid]
+        return _obj(stripe_subs[sid])
 
     def _retrieve(sid, **kw):
         calls["retrieve"].append(sid)
         if sid not in stripe_subs:
             raise stripe.InvalidRequestError("No such subscription", "id", code="resource_missing")
-        return stripe_subs[sid]
+        return _obj(stripe_subs[sid])
+
+    def _cancel(sid, **kw):
+        assert stripe.api_key.startswith("sk_test_")
+        calls["cancel"].append(sid)
+        stripe_subs[sid]["status"] = "canceled"
+        return _obj(stripe_subs[sid])
 
     monkeypatch.setattr(stripe.Subscription, "list", _list)
     monkeypatch.setattr(stripe.Subscription, "modify", _modify)
+    monkeypatch.setattr(stripe.Subscription, "cancel", _cancel)
     monkeypatch.setattr(stripe.Subscription, "retrieve", _retrieve)
 
     # Cognito: a fake client; the session's real AWS credentials are never used.
@@ -609,3 +620,155 @@ def test_prune_removes_only_devices_unseen_for_30_days(env):
         return await prune_stale_devices(db, now=now)
     assert env.run(age_and_prune) == 1
     assert list(_devices(env)) == [keep]
+
+
+def test_missing_page_views_table_is_skipped_not_a_failure(env):
+    uid = _seed_paying_user(env)
+
+    async def drop(db):
+        await db.execute(text("DROP TABLE page_views"))
+        await db.commit()
+    env.run(drop)
+    assert env.client.delete("/me", headers=auth()).status_code == 202
+    assert _user(env, "sub-a") is None
+
+    async def audit(db):
+        return await db.scalar(select(func.count()).select_from(AccountDeletion))
+    assert env.run(audit) == 1 and uid
+
+
+# --- Stripe objects and webhooks -------------------------------------------
+# Real stripe.StripeObject instances (construct_from), never plain dicts:
+# from stripe-python 13 they have no .get().
+
+from app.services.stripe_fields import field, period_end  # noqa: E402
+from app.services.stripe_service import stripe_service  # noqa: E402
+
+
+def _event(kind, obj):
+    return stripe.Event.construct_from(
+        {"id": "evt_1", "type": kind, "data": {"object": obj}}, "sk_test_dummy"
+    )
+
+
+def test_field_and_period_end_on_real_stripe_objects():
+    old_shape = stripe.Subscription.construct_from(
+        {"id": "sub_1", "status": "active", "current_period_end": 1800000000}, "sk_test_dummy")
+    new_shape = stripe.Subscription.construct_from(
+        {"id": "sub_2", "status": "active",
+         "items": {"object": "list", "data": [{"id": "si_1", "current_period_end": 1800000500}]}},
+        "sk_test_dummy")
+    with pytest.raises(AttributeError):
+        old_shape.get("status")  # the trap this helper exists for
+    assert field(old_shape, "status") == "active"
+    assert field(old_shape, "trial_end") is None and field(None, "x", 3) == 3
+    assert period_end(old_shape) == datetime.fromtimestamp(1800000000, tz=timezone.utc)
+    assert period_end(new_shape) == datetime.fromtimestamp(1800000500, tz=timezone.utc)
+
+
+def _website_user(env, sub="sub-w"):
+    env.client.post("/devices", json=reg(TOKEN_A), headers=auth(sub))  # creates the user rows
+
+    async def link(db):
+        user = (await db.execute(select(User).where(User.cognito_id == sub))).scalar_one()
+        await db.execute(update(Subscription).where(Subscription.user_id == user.id).values(
+            stripe_customer_id="cus_w", stripe_subscription_id=None, plan="free", status="trialing"))
+        await db.commit()
+        return user.id
+    return env.run(link)
+
+
+def _sub_row(env, uid):
+    async def q(db):
+        return (await db.execute(select(Subscription).where(Subscription.user_id == uid))).scalar_one()
+    return env.run(q)
+
+
+def test_checkout_completed_on_current_stripe_objects(env, monkeypatch):
+    uid = _website_user(env)
+    monkeypatch.setattr(stripe_service, "_price_to_plan", lambda price: "pro_monthly")
+    env.stripe_subs["sub_w"] = {
+        "id": "sub_w", "customer": "cus_w", "status": "active", "cancel_at_period_end": False,
+        "items": {"object": "list", "data": [
+            {"id": "si_1", "price": {"id": "price_m"}, "current_period_end": 1800000000}]},
+    }
+    session = stripe.checkout.Session.construct_from(
+        {"id": "cs_1", "customer": "cus_w", "subscription": "sub_w", "mode": "subscription"},
+        "sk_test_dummy")
+    env.run(lambda db: stripe_service.handle_checkout_completed(_event("checkout.session.completed", session), db))
+    row = _sub_row(env, uid)
+    assert row.stripe_subscription_id == "sub_w" and row.plan == "pro_monthly" and row.status == "active"
+    end = row.current_period_end if row.current_period_end.tzinfo else row.current_period_end.replace(tzinfo=timezone.utc)
+    assert end == datetime.fromtimestamp(1800000000, tz=timezone.utc)
+    assert env.calls["cancel"] == []
+
+
+def test_subscription_updated_on_current_stripe_objects(env, monkeypatch):
+    uid = _website_user(env)
+    monkeypatch.setattr(stripe_service, "_price_to_plan", lambda price: "pro_weekly")
+
+    async def link(db):
+        await db.execute(update(Subscription).where(Subscription.user_id == uid).values(
+            stripe_subscription_id="sub_w"))
+        await db.commit()
+    env.run(link)
+    obj = stripe.Subscription.construct_from({
+        "id": "sub_w", "customer": "cus_w", "status": "past_due", "trial_end": 1790000000,
+        "items": {"object": "list", "data": [
+            {"id": "si_1", "price": {"id": "price_w"}, "current_period_end": 1800000000}]},
+    }, "sk_test_dummy")
+    env.run(lambda db: stripe_service.handle_subscription_updated(_event("customer.subscription.updated", obj), db))
+    row = _sub_row(env, uid)
+    assert row.plan == "pro_weekly" and row.status == "past_due" and row.trial_ends_at is not None
+
+
+def _deleted_customer(env):
+    """A paying user who ran DELETE /me; cus_1 is now a deleted account's customer."""
+    _seed_paying_user(env)
+    assert env.client.delete("/me", headers=auth()).status_code == 202
+
+    async def audit(db):
+        return (await db.execute(select(AccountDeletion))).scalar_one()
+    row = env.run(audit)
+    assert row.stripe_customer_hash == hash_sub("cus_1") and row.sub_hash == hash_sub("sub-a")
+
+
+def test_checkout_after_deletion_cancels_immediately(env):
+    _deleted_customer(env)
+    env.stripe_subs["sub_late"] = {"id": "sub_late", "customer": "cus_1", "status": "active",
+                                   "cancel_at_period_end": False}
+    session = stripe.checkout.Session.construct_from(
+        {"id": "cs_2", "customer": "cus_1", "subscription": "sub_late", "mode": "subscription"},
+        "sk_test_dummy")
+    env.run(lambda db: stripe_service.handle_checkout_completed(_event("checkout.session.completed", session), db))
+    assert env.calls["cancel"] == ["sub_late"]
+    assert _user(env, "sub-a") is None  # no row is re-created
+
+
+def test_subscription_update_after_deletion(env):
+    _deleted_customer(env)
+
+    def update_event(status, cancelling):
+        return _event("customer.subscription.updated", stripe.Subscription.construct_from({
+            "id": "sub_active_1", "customer": "cus_1", "status": status,
+            "cancel_at_period_end": cancelling,
+            "items": {"object": "list", "data": [{"id": "si_1", "price": {"id": "p"}}]},
+        }, "sk_test_dummy"))
+
+    # The event our own cancel_at_period_end fires: left to end at period end.
+    env.run(lambda db: stripe_service.handle_subscription_updated(update_event("active", True), db))
+    assert env.calls["cancel"] == []
+    # Already over: nothing to do.
+    env.run(lambda db: stripe_service.handle_subscription_updated(update_event("canceled", False), db))
+    assert env.calls["cancel"] == []
+    # Billing again and not set to end (reactivated): cancelled now.
+    env.run(lambda db: stripe_service.handle_subscription_updated(update_event("active", False), db))
+    assert env.calls["cancel"] == ["sub_active_1"]
+
+
+def test_webhook_for_an_unknown_customer_does_nothing(env):
+    session = stripe.checkout.Session.construct_from(
+        {"id": "cs_3", "customer": "cus_nobody", "subscription": "sub_x", "mode": "subscription"},
+        "sk_test_dummy")
+    env.run(lambda db: stripe_service.handle_checkout_completed(_event("checkout.session.completed", session), db))
+    assert env.calls["cancel"] == [] and env.calls["retrieve"] == []

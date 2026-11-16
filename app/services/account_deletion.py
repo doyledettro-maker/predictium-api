@@ -25,7 +25,7 @@ import boto3
 import httpx
 import stripe
 from botocore.exceptions import BotoCoreError, ClientError
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, inspect, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from app.models.page_view import PageView
 from app.models.push_device import PushDevice
 from app.models.subscription import Subscription
 from app.models.user import User
+from app.services.stripe_fields import field
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ REVENUECAT_API = "https://api.revenuecat.com/v1"
 
 # Stripe statuses that can still bill. "incomplete" lapses by itself and
 # "canceled" / "incomplete_expired" are already over.
-_BILLABLE = {"active", "trialing", "past_due", "unpaid", "paused"}
+BILLABLE = {"active", "trialing", "past_due", "unpaid", "paused"}
 
 
 class DeletionStepFailed(Exception):
@@ -58,8 +59,8 @@ def _cancel_stripe_sync(customer_id: Optional[str], subscription_id: Optional[st
     if customer_id:
         try:
             page = stripe.Subscription.list(customer=customer_id, status="all", limit=100)
-            for s in page.auto_paging_iter():
-                subs[s["id"]] = s
+            for item in page.auto_paging_iter():
+                subs[item["id"]] = item
         except stripe.InvalidRequestError as e:
             # A customer already deleted in Stripe has nothing left to bill.
             if getattr(e, "code", None) != "resource_missing":
@@ -71,8 +72,8 @@ def _cancel_stripe_sync(customer_id: Optional[str], subscription_id: Optional[st
             if getattr(e, "code", None) != "resource_missing":
                 raise
     changed = 0
-    for sid, s in subs.items():
-        if s.get("status") in _BILLABLE and not s.get("cancel_at_period_end"):
+    for sid, sub in subs.items():
+        if field(sub, "status") in BILLABLE and not field(sub, "cancel_at_period_end"):
             stripe.Subscription.modify(sid, cancel_at_period_end=True)
             changed += 1
     return changed
@@ -115,7 +116,14 @@ async def delete_revenuecat_subscriber(sub: str, client: Optional[httpx.AsyncCli
         raise DeletionStepFailed("store_entitlements")
 
 
-async def delete_rows(db: AsyncSession, sub: str, user: Optional[User]) -> None:
+async def _has_table(db: AsyncSession, name: str) -> bool:
+    conn = await db.connection()
+    return await conn.run_sync(lambda c: inspect(c).has_table(name))
+
+
+async def delete_rows(
+    db: AsyncSession, sub: str, user: Optional[User], stripe_customer_id: Optional[str] = None
+) -> None:
     try:
         if user is not None:
             uid = user.id
@@ -125,16 +133,49 @@ async def delete_rows(db: AsyncSession, sub: str, user: Optional[User]) -> None:
             await db.execute(update(Coupon).where(Coupon.created_by == uid).values(created_by=None))
             await db.execute(delete(Subscription).where(Subscription.user_id == uid))
             await db.execute(delete(User).where(User.id == uid))
-        await db.execute(delete(PageView).where(PageView.user_id == sub))
+        # page_views is created by the analytics startup only when analytics
+        # is configured. No table means no rows to delete, not a failure.
+        if await _has_table(db, PageView.__tablename__):
+            await db.execute(delete(PageView).where(PageView.user_id == sub))
         h = hash_sub(sub)
-        seen = await db.execute(select(AccountDeletion.id).where(AccountDeletion.sub_hash == h))
-        if seen.first() is None:
-            db.add(AccountDeletion(sub_hash=h))
+        row = (
+            await db.execute(select(AccountDeletion).where(AccountDeletion.sub_hash == h))
+        ).scalar_one_or_none()
+        if row is None:
+            row = AccountDeletion(sub_hash=h)
+            db.add(row)
+        if stripe_customer_id and not row.stripe_customer_hash:
+            row.stripe_customer_hash = hash_sub(stripe_customer_id)
         await db.commit()
     except SQLAlchemyError as e:
         await db.rollback()
         logger.warning("Account deletion: database step failed (%s)", type(e).__name__)
         raise DeletionStepFailed("data")
+
+
+async def is_deleted_customer(db: AsyncSession, customer_id: Optional[str]) -> bool:
+    """True when this Stripe customer belonged to an account DELETE /me removed.
+
+    Stripe events carry the customer id, not the Cognito sub, so the audit
+    row keeps a hash of the customer id as well.
+    """
+    if not customer_id:
+        return False
+    found = await db.execute(
+        select(AccountDeletion.id).where(AccountDeletion.stripe_customer_hash == hash_sub(customer_id))
+    )
+    return found.first() is not None
+
+
+def cancel_subscription_now(subscription_id: str) -> None:
+    """Cancels at once a subscription that started or restarted after its
+    account was deleted. Already gone counts as done."""
+    try:
+        stripe.Subscription.cancel(subscription_id)
+        logger.info("Cancelled a subscription of a deleted account")
+    except stripe.InvalidRequestError as e:
+        if getattr(e, "code", None) != "resource_missing":
+            raise
 
 
 def _cognito_client():
@@ -178,7 +219,7 @@ async def delete_account(db: AsyncSession, claims: Dict[str, Any]) -> List[str]:
 
     await cancel_stripe(subscription)
     await delete_revenuecat_subscriber(sub)
-    await delete_rows(db, sub, user)
+    await delete_rows(db, sub, user, subscription.stripe_customer_id if subscription else None)
     await delete_cognito_user(cognito_username(claims))
     logger.info("Account deletion finished for sub hash %s", hash_sub(sub)[:12])
     return ["billing", "store_entitlements", "data", "identity"]

@@ -36,14 +36,45 @@ returns 503 with that step's name, and nothing a retry needs has been lost.
    with a warning.
 3. `data`: one transaction deletes the push devices, the page_views rows
    keyed by the sub, coupon redemptions, the subscription row and the user
-   row. Coupons the user created are kept with `created_by` set to NULL. It
-   also writes `account_deletions` (a SHA-256 of the sub and a timestamp).
+   row. If the page_views table does not exist (analytics never set up),
+   that part is skipped. Coupons the user created are kept with
+   `created_by` set to NULL. It also writes `account_deletions`: a SHA-256
+   of the sub, a SHA-256 of the Stripe customer id, and a timestamp.
 4. `identity`: Cognito `AdminDeleteUser` with `cognito:username`.
    `UserNotFoundException` counts as done.
 
 Once step 3 has run, a token that is still valid cannot re-create the user
 row through any other route. Those routes answer 401 "This account was
 deleted".
+
+Stripe cancellation is at period end for now. Doyle will decide whether it
+should be immediate.
+
+## Stripe webhooks after a deletion
+
+Stripe events carry the customer id, not the Cognito sub, so matching uses
+the hashed customer id on `account_deletions`.
+
+- `checkout.session.completed` for a deleted account's customer (a checkout
+  opened before DELETE /me and finished after it): the new subscription is
+  cancelled at once. A one-time payment is logged for a manual refund.
+- `customer.subscription.updated` for a deleted account's customer: if the
+  subscription can still bill and is not already set to end, it is
+  cancelled at once. The event that DELETE /me itself causes (setting
+  `cancel_at_period_end`) is left alone.
+- No user row is re-created either way.
+
+## Stripe library
+
+Stripe objects are read by key through `app/services/stripe_fields.py`.
+From stripe-python 13, `.get()` raises AttributeError on them. From 12,
+the pinned API version moved `current_period_end` onto the subscription
+items. Both are handled, and `requirements.txt` caps stripe below 18
+(tested on 17.0.0). I could not see which version the live image runs. A
+build on 13 or later without this PR would break the existing
+`handle_checkout_completed` and `handle_subscription_updated` on website
+checkouts. Each webhook would be logged as an error and return 200, and
+the plan would not update.
 
 ## Deploy steps (in order)
 
@@ -57,12 +88,21 @@ None of these have been run. Each needs a person with production access.
    push_devices references users without `ON DELETE CASCADE`, the data step
    will fail safe with a 503. That table then needs adding to
    `delete_rows` before launch.
-2. **Migration 001**: `psql -f database/migrations/001_push_devices_and_account_deletions.sql`.
-   It is idempotent and runs in a transaction. Copy it into
-   Predictium_Front_End's migrations too if that stays the canonical list.
-3. **Migration 002**: `psql -f database/migrations/002_page_views_user_id_index.sql`.
-   Run it on its own, outside a transaction (it uses CREATE INDEX
-   CONCURRENTLY). It is safe while serving.
+2. **Migration 009**: `psql -f database/migrations/009_push_devices_and_account_deletions.sql`.
+   This MUST run before the new code deploys. Every new user's first
+   request queries `account_deletions`, and without the table that request
+   fails with a 500. It is idempotent and runs in a transaction.
+3. **Migration 010**: `psql -f database/migrations/010_page_views_user_id_index.sql`.
+   Run it after 009, on its own and outside a transaction (it uses CREATE
+   INDEX CONCURRENTLY). It is safe while serving. Then check it:
+   `SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_page_views_user_id'::regclass;`.
+   If that returns false, run `DROP INDEX CONCURRENTLY idx_page_views_user_id;`
+   and then run 010 again.
+
+   The numbers follow Predictium_Front_End `database/migrations`, the
+   canonical series (001 to 008). Both files must be applied, in the order
+   009 then 010. They also need copying into that repo, which this PR
+   cannot push to.
 4. **IAM**: give the API task role `cognito-idp:AdminDeleteUser` on this
    user pool's ARN only.
 5. **Env vars** (names only; values come from the secret store):
@@ -96,7 +136,11 @@ None of these have been run. Each needs a person with production access.
   there is nothing to delete. Add it to `delete_rows` when section 2 lands.
 - **Analytics rows.** page_views rows keyed by the sub are deleted, as the
   proposal says. They are not anonymised.
-- **Migrations.** The SQL lives in this repo under `database/migrations/`,
-  because Predictium_Front_End (the usual home) was out of scope.
+- **Migrations.** They are numbered 009 and 010 after Predictium_Front_End's
+  series, and the files live in this repo under `database/migrations/` for
+  now. They need copying into that repo.
+- **Audit row.** The proposal says the audit log keeps a timestamp and a
+  hash of the sub. It also keeps a hash of the Stripe customer id, so a
+  late webhook can be matched and its subscription cancelled.
 - **Missing Authorization header.** This is now 401 on every route. It used
   to be FastAPI's 422.

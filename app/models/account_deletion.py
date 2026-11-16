@@ -1,12 +1,15 @@
 """AccountDeletion: the audit trail for DELETE /me.
 
-It keeps only a SHA-256 hash of the Cognito sub and when the deletion
-happened, nothing else about the person. The hash also stops a still-valid
+It keeps only a SHA-256 hash of the Cognito sub, a SHA-256 hash of the
+Stripe customer id (so a late Stripe webhook can be matched and its
+subscription cancelled) and when the deletion happened. Nothing else about
+the person. The hash also stops a still-valid
 token from silently re-creating a deleted user on another endpoint.
 """
 
 import hashlib
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import BigInteger, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -27,6 +30,7 @@ class AccountDeletion(Base):
         autoincrement=True,
     )
     sub_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    stripe_customer_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     deleted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

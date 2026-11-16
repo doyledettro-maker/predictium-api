@@ -1,7 +1,10 @@
 -- Mobile app: push device registration and the account deletion audit trail.
 -- Contract: predictium-app docs/API_PROPOSAL.md sections 1 and 5.
--- Idempotent. Run once per database, before deploying the API build that
--- serves /devices and DELETE /me. Needs the users table to exist already.
+-- Numbered after Predictium_Front_End/database/migrations 001 to 008, the
+-- canonical series. Apply 009 and then 010, in that order.
+-- Idempotent. MUST run before deploying the API build that serves /devices
+-- and DELETE /me: every first sign-in queries account_deletions. Needs the
+-- users table to exist already.
 
 BEGIN;
 
@@ -19,12 +22,17 @@ CREATE TABLE IF NOT EXISTS push_devices (
 CREATE INDEX IF NOT EXISTS ix_push_devices_user_id ON push_devices (user_id);
 CREATE INDEX IF NOT EXISTS ix_push_devices_last_seen_at ON push_devices (last_seen_at);
 
--- Only a hash of the Cognito sub and a timestamp. Nothing else about the person.
+-- Only hashes (of the Cognito sub, and of the Stripe customer id so a late
+-- Stripe webhook can be matched) and a timestamp. Nothing else about the person.
 CREATE TABLE IF NOT EXISTS account_deletions (
-    id         BIGSERIAL PRIMARY KEY,
-    sub_hash   VARCHAR(64) NOT NULL,
-    deleted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    id                   BIGSERIAL PRIMARY KEY,
+    sub_hash             VARCHAR(64) NOT NULL,
+    stripe_customer_hash VARCHAR(64),
+    deleted_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT account_deletions_sub_hash_key UNIQUE (sub_hash)
 );
+
+CREATE INDEX IF NOT EXISTS ix_account_deletions_stripe_customer_hash
+    ON account_deletions (stripe_customer_hash);
 
 COMMIT;
