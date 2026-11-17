@@ -15,7 +15,10 @@ Risk containment, non-negotiable in code review:
   if they block us, we log the health event and live without it.
 
 League ids (guest API): NFL 889, NBA 487, WNBA 578, MLB 246, NCAAF 880,
-ATP/WTA under sport 33 (per-tournament league ids).
+NHL 1456 (hockey, sport 19), ATP/WTA under sport 33 (per-tournament league
+ids). NHL 1456 is NOT yet verified live: the guest API answers 403 to the
+cloud session that added it (2026-11-17). The first NHL run from the Mac mini
+must confirm the league name before the board relies on it.
 """
 
 from __future__ import annotations
@@ -32,7 +35,8 @@ BOOK = "pinnacle"
 # public key embedded in pinnacle.com's web bundle
 API_KEY = "CmX2KcMrXuFmNg6YFbmTxE0y9CIrOi2R"
 
-LEAGUE_IDS = {"nfl": 889, "nba": 487, "wnba": 578, "mlb": 246, "cfb": 880}
+LEAGUE_IDS = {"nfl": 889, "nba": 487, "wnba": 578, "mlb": 246, "cfb": 880,
+              "nhl": 1456}  # nhl: unverified, see the module docstring
 
 
 def _get(path: str, **params):

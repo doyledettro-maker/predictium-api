@@ -2,6 +2,35 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.3.3 (2026-11-17)
+
+NHL. Additive: every existing caller and every existing test is unchanged.
+
+- `books.kalshi.NHL_SERIES`: KXNHLGAME, KXNHLSPREAD, KXNHLTOTAL and
+  KXNHLTEAMTOTAL, verified live against `/series` and `/markets` (tickers,
+  strike types, rules text, fee terms). They go through the existing
+  `fetch_game_quotes` and `fetch_ladder`.
+- `parse_contract(..., team_total=True, team_names={code: name})` and the
+  same two arguments on `fetch_ladder`: a team-total rung ("Utah over 5.5",
+  ticker "...-UTA6") carries `team_code` and `subject`. Before, both were
+  None, so the two teams' rungs in one event could not be told apart. It
+  fails closed and raises `StrikeParseError` unless:
+  - the ticker ends in -CODE<rung>, with rung = floor + 0.5;
+  - CODE is one of the event ticker's two teams;
+  - the subtitle reads "<name> over <line>" with no ":";
+  - name == team_names[CODE].
+  `team_names` is required with the flag (ValueError, before any request).
+  The flag is never inferred, so every existing caller parses as in 0.3.2.
+- `parse_contract`: "wins by" text on a non-spread contract raises.
+- `books.pinnacle.LEAGUE_IDS["nhl"] = 1456`, not yet verified live (403 from
+  the cloud session).
+- FanDuel and Bovada NHL need no code: the existing maps read moneyline,
+  puck line and total goals. FanDuel lists no per-game NHL team total.
+  Bovada is not yet verified live.
+- `tests/test_nhl.py`: 40 tests, including one fail-closed test per case
+  from the #30 review. Fixtures are shaped on the live rows, with synthetic
+  prices.
+
 ## 0.3.2 (2026-11-09)
 
 Kalshi reads now retry HTTP 500, 502, 503 and 504 exactly like 429: the same
