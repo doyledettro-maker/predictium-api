@@ -20,13 +20,14 @@ async def get_latest_predictions(
     user_info: Dict[str, str] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
-    Get the latest predictions for today and tomorrow.
-    
-    Returns the full prediction response including:
-    - Today's games with predictions
-    - Tomorrow's games with predictions
-    - Model metadata
-    - Summary statistics
+    Get the latest predictions: the whole of latest.json.
+
+    Serves the full object as published, through the book guard only (book
+    fields and book-naming strings are removed). That includes every day it
+    carries (today, tomorrow, day_three, the days list and any other key),
+    model metadata and summary statistics. Games 2 or more days out keep
+    their `lead_forecast` and `lead_forecast_reason` markers beside their
+    model numbers. This endpoint does no lead-time filtering of its own.
     
     Requires authentication.
     
