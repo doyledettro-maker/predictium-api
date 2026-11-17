@@ -20,8 +20,8 @@ REASON = ("Forecast made 2 or more days before tip-off. Accuracy at this "
           "lead time has not been measured yet.")
 
 
-def _lead_game(game_id, spread, total, prob):
-    return {
+def _lead_game(game_id, spread, total, prob, note=None):
+    g = {
         "game_id": game_id,
         "predictions": {"spread": spread, "total": total, "home_win_prob": prob},
         "lead_forecast": MARKER,
@@ -32,45 +32,66 @@ def _lead_game(game_id, spread, total, prob):
                   "books": {"pinnacle": {"spread": -spread}}},
         "ml_home_book": "bovada",
     }
+    if note is not None:
+        g["note"] = note       # book-naming prose: the string scrub nulls it
+    return g
 
 
-def _same_day_game():
-    return {"game_id": "NYK@BOS_2026-11-17",
-            "predictions": {"spread": -2.0, "total": 224.5, "home_win_prob": 0.56}}
+def _game(game_id, spread, total, prob):
+    return {"game_id": game_id,
+            "predictions": {"spread": spread, "total": total, "home_win_prob": prob}}
 
 
-# Lead games, by where they sit in latest.json: (path, game_id, numbers).
+def _day(date, dow, games):
+    """A day block in the live shape (checked against the bucket 2026-11-17)."""
+    return {"date": date, "day_of_week": dow, "game_count": len(games),
+            "games": games}
+
+
+# Lead games (2 or more days out): (game_id, spread, total, home_win_prob).
+LAL_DEN = ("LAL@DEN_2026-11-19", -3.5, 229.5, 0.61)
+PHX_GSW = ("PHX@GSW_2026-11-20", -6.0, 231.5, 0.68)
+MIA_CHI = ("MIA@CHI_2026-11-21", 1.5, 214.0, 0.47)
+NOTE = "Line first posted at Pinnacle."
+
+# Where each lead game sits in the served object, and which game it is.
+# 11-19 is day_three and also days[2]: the same block in both places.
 LEAD = {
-    "day_three": ("LAL@DEN_2026-11-19", -3.5, 229.5, 0.61),
-    "days/2": ("MIA@CHI_2026-11-19", 1.5, 214.0, 0.47),
-    "days/3": ("PHX@GSW_2026-11-20", -6.0, 231.5, 0.68),
+    "/day_three/games/0": LAL_DEN,
+    "/days/2/games/0": LAL_DEN,
+    "/days/3/games/0": PHX_GSW,
+    "/days/4/games/0": MIA_CHI,
 }
 
 
 def _latest():
-    lead = {k: _lead_game(*v) for k, v in LEAD.items()}
+    today = _day("2026-11-17", "Tuesday", [_game("NYK@BOS_2026-11-17", -2.0, 224.5, 0.56)])
+    tomorrow = _day("2026-11-18", "Wednesday", [_game("DAL@HOU_2026-11-18", 2.5, 226.0, 0.44)])
+    day_three = _day("2026-11-19", "Thursday", [_lead_game(*LAL_DEN, note=NOTE)])
     return {
         "status": "ok",
         "meta": {"generated_at": "2026-11-17T12:00:00Z"},
-        "today": {"games": [_same_day_game()]},
-        "tomorrow": {"games": []},
-        "day_three": {"date": "2026-11-19", "games": [lead["day_three"]]},
+        "hold": {},
+        "today": today,
+        "tomorrow": tomorrow,
+        "day_three": day_three,
+        # days[0..2] mirror today, tomorrow and day_three, as on the bucket.
         "days": [
-            {"date": "2026-11-17", "games": [_same_day_game()]},
-            {"date": "2026-11-18", "games": []},
-            {"date": "2026-11-19", "games": [lead["days/2"]]},
-            {"date": "2026-11-20", "games": [lead["days/3"]]},
+            copy.deepcopy(today), copy.deepcopy(tomorrow), copy.deepcopy(day_three),
+            _day("2026-11-20", "Friday", [_lead_game(*PHX_GSW)]),
+            _day("2026-11-21", "Saturday", [_lead_game(*MIA_CHI)]),
+            _day("2026-11-22", "Sunday", []),
         ],
+        "summary": {"total_games": 5},
+        "errors": [],
     }
 
 
-def _lead_games_in(body):
-    """(path, game) for every lead game, found by where the fixture put it."""
-    return [
-        ("day_three", body["day_three"]["games"][0]),
-        ("days/2", body["days"][2]["games"][0]),
-        ("days/3", body["days"][3]["games"][0]),
-    ]
+def _at(body, pointer):
+    node = body
+    for part in pointer.strip("/").split("/"):
+        node = node[int(part)] if isinstance(node, list) else node[part]
+    return node
 
 
 def _games_with_marker(obj):
@@ -86,15 +107,24 @@ def _games_with_marker(obj):
 
 
 def _assert_marker_kept(body):
-    for where, game in _lead_games_in(body):
-        game_id, spread, total, prob = LEAD[where]
+    for where, (game_id, spread, total, prob) in LEAD.items():
+        game = _at(body, where)
         assert game["game_id"] == game_id, where
         assert game["lead_forecast"] == MARKER, where
         assert game["lead_forecast_reason"] == REASON, where
         assert game["predictions"] == {"spread": spread, "total": total,
                                        "home_win_prob": prob}, where
+        if game_id == LAL_DEN[0]:
+            assert game["note"] is None, where      # book prose scrubbed
     # No lead game lost and none gained a marker it did not have.
     assert len(list(_games_with_marker(body))) == len(LEAD)
+
+
+# Every path the guard must report: the two book fields on each lead game,
+# and the book-naming note on both copies of the 11-19 game.
+EXPECTED_REMOVED = sorted(
+    [f"{w}/vegas/books" for w in LEAD] + [f"{w}/ml_home_book" for w in LEAD]
+    + ["/day_three/games/0/note", "/days/2/games/0/note"])
 
 
 def test_guard_keeps_the_lead_marker_beside_the_numbers():
@@ -103,9 +133,8 @@ def test_guard_keeps_the_lead_marker_beside_the_numbers():
     clean, removed = guard_response(src)
     _assert_marker_kept(clean)
     _assert_no_book(clean)
-    # The guard did strip the book data on those same games.
-    assert all(p.endswith(("/books", "/ml_home_book")) for p in removed)
-    assert len(removed) == 2 * len(LEAD)
+    # The guard did strip the book data and the book prose on those games.
+    assert sorted(removed) == EXPECTED_REMOVED
     assert src == before                     # a copy, never the input
 
 
@@ -122,5 +151,8 @@ def test_latest_endpoint_serves_the_lead_marker_unchanged(monkeypatch):
     # The pass-through serves the whole object: every day is still there,
     # same-day games carry no marker, and nothing was filtered by lead time.
     assert set(body) == set(_latest())
-    assert [len(d["games"]) for d in body["days"]] == [1, 0, 1, 1]
-    assert "lead_forecast" not in body["today"]["games"][0]
+    assert [len(d["games"]) for d in body["days"]] == [1, 1, 1, 1, 1, 0]
+    assert [d["game_count"] for d in body["days"]] == [1, 1, 1, 1, 1, 0]
+    for day in ("today", "tomorrow"):
+        assert "lead_forecast" not in body[day]["games"][0]
+    assert body["days"][2] == body["day_three"]   # mirror kept after the guard
