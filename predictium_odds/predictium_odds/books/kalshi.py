@@ -452,6 +452,8 @@ def parse_contract(m: dict, *, spread: bool,
     team_total=True (a TEAMTOTAL series such as KXNHLTEAMTOTAL; never
     inferred, so every other caller parses exactly as before) also reads
     which team the rung is for, and raises unless all of these hold:
+      - the contract has a strike (a structured row raises);
+      - the ticker is under its event (starts with event_ticker + "-");
       - the ticker ends in -CODE<rung>, and rung == floor + 0.5;
       - CODE is one of the event's two teams (the event ticker's matchup
         segment starts or ends with it);
@@ -491,11 +493,17 @@ def parse_contract(m: dict, *, spread: bool,
                                f"contract: {sub!r}")
     if team_total and spread:
         raise StrikeParseError(f"{ticker}: team_total and spread together")
+    if team_total and not ticker.startswith((m.get("event_ticker") or "?") + "-"):
+        raise StrikeParseError(f"{ticker}: ticker is not under event "
+                               f"{m.get('event_ticker')!r}")
 
     if stype == "structured":
         if spread:
             raise StrikeParseError(f"{ticker}: structured contract on a "
                                    "spread series")
+        if team_total:
+            raise StrikeParseError(f"{ticker}: structured contract on a "
+                                   "team total series")
         if not sub:
             raise StrikeParseError(f"{ticker}: structured contract with no "
                                    "outcome name")

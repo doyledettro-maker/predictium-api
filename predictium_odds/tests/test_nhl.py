@@ -1,4 +1,4 @@
-"""NHL through the shared layer (0.3.3). Fixtures only, no network.
+"""NHL through the shared layer (0.3.3, 0.3.4). Fixtures only, no network.
 
 Every Kalshi row below copies the SHAPE seen live on 2026-11-17 (ticker,
 event ticker, strike type, floor, yes_sub_title, rules text, series fee
@@ -133,20 +133,23 @@ def test_without_the_flag_a_team_total_parses_exactly_as_before():
 
 
 def test_the_flag_needs_the_name_table():
-    with pytest.raises(ValueError):
+    # StrikeParseError is a ValueError, so check the exact type: the table
+    # check must fire, not a later parse failure on the missing names.
+    with pytest.raises(ValueError, match="needs team_names") as e:
         parse_contract(TEAM_TOTAL[0], spread=False, team_total=True)
+    assert type(e.value) is ValueError
 
 
 def _variant(ticker_suffix=None, sub=None, floor=None, event=None):
+    # The ticker stays under the event, so each case trips only its own check.
     row = dict(TEAM_TOTAL[0])          # UTA4, "Utah over 3.5", floor 3.5
-    if ticker_suffix is not None:
-        row["ticker"] = "KXNHLTEAMTOTAL-26NOV18COLUTA-" + ticker_suffix
+    if event is not None:
+        row["event_ticker"] = event
+    row["ticker"] = f"{row['event_ticker']}-{ticker_suffix or 'UTA4'}"
     if sub is not None:
         row["yes_sub_title"] = sub
     if floor is not None:
         row["floor_strike"] = floor
-    if event is not None:
-        row["event_ticker"] = event
     return row
 
 
@@ -162,11 +165,25 @@ def _variant(ticker_suffix=None, sub=None, floor=None, event=None):
     (_variant(event="KXNHLTEAMTOTAL-COLUTA"), "no matchup segment in the event"),
     (_variant(ticker_suffix="ARI4", sub="Arizona over 3.5"),
      "code in neither end of the matchup"),
+    # Follow-ups to the #30 re-review: each survived a mutation before.
+    (_variant(ticker_suffix="UTA3"), "rung is floor - 0.5"),
+    (_variant(sub="utah over 3.5"), "subtitle name in the wrong case"),
+    (_variant(ticker_suffix="LA4", sub="Los Angeles over 3.5",
+              event="KXNHLTEAMTOTAL-26NOV18STLAVGK"),
+     "code only in the middle of the matchup"),
+    (dict(_variant(), event_ticker="KXNHLTEAMTOTAL-26NOV19COLUTA"),
+     "ticker is not under its event"),
 ])
 def test_a_team_total_fails_closed(row, why):
     with pytest.raises(kalshi.StrikeParseError):
-        _tt(row,
-            team_names={**NAMES, "BOS": "Boston", "ARI": "Arizona"})
+        _tt(row, team_names={**NAMES, "BOS": "Boston", "ARI": "Arizona",
+                             "LA": "Los Angeles", "STL": "St. Louis",
+                             "VGK": "Vegas"})
+
+
+def test_a_structured_row_with_the_team_total_flag_raises():
+    with pytest.raises(kalshi.StrikeParseError):
+        _tt(GAME[0], team_names={"SJ": "San Jose", "MIN": "Minnesota"})
 
 
 def test_a_code_missing_from_the_name_table_raises():
