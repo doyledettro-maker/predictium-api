@@ -330,9 +330,13 @@ _KPLUS_RE = re.compile(r"(?<![\d.])(\d+)\+")
 _OVER_RE = re.compile(r"\b(?:over|more than)\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 _SPREAD_TEXT_RE = re.compile(r"\bwins by (?:over|more than)\b", re.IGNORECASE)
 _TEAM_SUFFIX_RE = re.compile(r"-(?P<code>[A-Z]+?)(?P<rung>\d+)$")
-# Team totals: "Utah over 5.5" on ticker "...-UTA6" (KXNHLTEAMTOTAL, 2026-11-17).
-_TEAM_OVER_RE = re.compile(r"^(?P<who>.+?)\s+(?:over|more than)\s+-?\d",
+# Team totals (team_total=True only): "Utah over 5.5" on ticker "...-UTA6",
+# event "KXNHLTEAMTOTAL-26NOV18COLUTA" (live 2026-11-17).
+_TEAM_OVER_RE = re.compile(r"^(?P<who>[^:]+?)\s+(?:over|more than)\s+\d",
                            re.IGNORECASE)
+# The event ticker's last segment: a YYMMMDD date, then the matchup codes
+# run together ("26NOV18COLUTA" -> "COLUTA").
+_MATCHUP_RE = re.compile(r"-\d{2}[A-Z]{3}\d{2}(?P<matchup>[A-Z]+)$")
 
 # The NHL series, by what they settle on (verified live 2026-11-17 against
 # GET /series and /markets: tickers, strike types, rules text, fee terms).
@@ -343,8 +347,8 @@ _TEAM_OVER_RE = re.compile(r"^(?P<who>.+?)\s+(?:over|more than)\s+-?\d",
 #   KXNHLSPREAD    greater, half-point, "Vegas wins by over 2.5 goals": the
 #                  puck line, team-oriented (VGK -2.5).
 #   KXNHLTOTAL     greater, half-point, "Over 8.5 goals scored".
-#   KXNHLTEAMTOTAL greater, half-point, "Utah over 5.5": one team's goals,
-#                  team code from the ticker suffix.
+#   KXNHLTEAMTOTAL greater, half-point, "Utah over 5.5": one team's goals.
+#                  Parse it with team_total=True (see parse_contract).
 # Listed but with nothing open on 2026-11-17, so not verified: KXNHLWINS and
 # the player props KXNHLGOAL, KXNHLPTS, KXNHLAST, KXNHLSAVES, KXNHLFIRSTGOAL.
 NHL_SERIES = {
@@ -364,7 +368,7 @@ class LadderContract:
     event_ticker: str
     kind: str                       # "over" | "spread" | "outcome"
     over_line: float | None         # YES = outcome > over_line (half-point)
-    team_code: str | None           # spread and team total: Kalshi's code, unmapped
+    team_code: str | None           # spread, and team total (team_total=True): Kalshi's code
     spread_line: float | None       # spread only: -over_line, for team_code
     outcome: str | None             # "outcome" only: yes_sub_title
     subject: str | None             # player / team text from the subtitle
@@ -438,11 +442,26 @@ def _is_int(x: float) -> bool:
 
 
 def parse_contract(m: dict, *, spread: bool,
-                   fees: dict | None = None) -> LadderContract:
+                   fees: dict | None = None, team_total: bool = False,
+                   team_names: dict[str, str] | None = None) -> LadderContract:
     """Normalise one /markets row. Raises StrikeParseError rather than guess.
 
     fees: the series' {"fee_type", "fee_multiplier"} from fetch_series_fees,
-    attached verbatim to the contract; None leaves them None."""
+    attached verbatim to the contract; None leaves them None.
+
+    team_total=True (a TEAMTOTAL series such as KXNHLTEAMTOTAL; never
+    inferred, so every other caller parses exactly as before) also reads
+    which team the rung is for, and raises unless all of these hold:
+      - the ticker ends in -CODE<rung>, and rung == floor + 0.5;
+      - CODE is one of the event's two teams (the event ticker's matchup
+        segment starts or ends with it);
+      - the subtitle reads "<name> over <floor>", with no ":" (a prop);
+      - the subtitle's name is team_names[CODE]: team_names is the repo's
+        own {Kalshi code: subtitle name} table, and is REQUIRED with
+        team_total=True (ValueError without it), so the subtitle is always
+        bound to the code and never just copied."""
+    if team_total and team_names is None:
+        raise ValueError("team_total=True needs team_names {code: name}")
     ticker = m.get("ticker") or "?"
     stype = m.get("strike_type")
     floor = _num(m, "floor_strike")
@@ -466,6 +485,12 @@ def parse_contract(m: dict, *, spread: bool,
         "last_price": _dollars(m, "last_price"),
         "market_status": _verbatim_str(m, "status"),
         "result": _verbatim_str(m, "result")}
+
+    if not spread and _SPREAD_TEXT_RE.search(sub):
+        raise StrikeParseError(f"{ticker}: 'wins by' text on a non-spread "
+                               f"contract: {sub!r}")
+    if team_total and spread:
+        raise StrikeParseError(f"{ticker}: team_total and spread together")
 
     if stype == "structured":
         if spread:
@@ -500,17 +525,14 @@ def parse_contract(m: dict, *, spread: bool,
                 f"strike {stype} {floor:g}")
 
     subject = sub.split(":", 1)[0].strip() if ":" in sub else None
+    if team_total:
+        code, name = _team_total_identity(ticker, m.get("event_ticker") or "",
+                                          sub, over, team_names)
+        return LadderContract(kind="over", over_line=over, team_code=code,
+                              spread_line=None, outcome=None, subject=name,
+                              **common)
     if not spread:
-        # A team total ("Utah over 5.5", ticker "...-UTA6") names its team in
-        # both places; carry both, or the two teams' rungs in one event are
-        # indistinguishable. Only when BOTH are present: a game total ("Over
-        # 8.5", ticker "...-9") and a prop ("Name: 9+") are unchanged.
-        team_code = None
-        tm = _TEAM_SUFFIX_RE.search(ticker)
-        who = _TEAM_OVER_RE.match(sub) if subject is None else None
-        if tm and who:
-            team_code, subject = tm.group("code"), who.group("who").strip()
-        return LadderContract(kind="over", over_line=over, team_code=team_code,
+        return LadderContract(kind="over", over_line=over, team_code=None,
                               spread_line=None, outcome=None, subject=subject,
                               **common)
 
@@ -522,6 +544,37 @@ def parse_contract(m: dict, *, spread: bool,
     return LadderContract(kind="spread", over_line=over,
                           team_code=tm.group("code"), spread_line=-over,
                           outcome=None, subject=subject, **common)
+
+
+def _team_total_identity(ticker: str, event: str, sub: str, over: float,
+                         team_names: dict[str, str] | None,
+                         ) -> tuple[str, str]:
+    """(code, name) for a team-total rung, or StrikeParseError. The checks
+    are listed in parse_contract's docstring."""
+    tm = _TEAM_SUFFIX_RE.search(ticker)
+    if not tm:
+        raise StrikeParseError(f"{ticker}: team total without a -CODE<rung> "
+                               "ticker suffix")
+    code, rung = tm.group("code"), int(tm.group("rung"))
+    if abs(rung - (over + 0.5)) > 1e-9:
+        raise StrikeParseError(f"{ticker}: rung {rung} is not floor "
+                               f"{over:g} + 0.5")
+    em = _MATCHUP_RE.search(event)
+    matchup = em.group("matchup") if em else ""
+    if not (len(matchup) > len(code)
+            and (matchup.startswith(code) or matchup.endswith(code))):
+        raise StrikeParseError(f"{ticker}: team code {code} is not one of the "
+                               f"teams in event {event!r}")
+    who = _TEAM_OVER_RE.match(sub)
+    if not who:
+        raise StrikeParseError(f"{ticker}: team total subtitle is not "
+                               f"'<team> over <line>': {sub!r}")
+    name = who.group("who").strip()
+    want = (team_names or {}).get(code)        # None: code not in the table
+    if want != name:
+        raise StrikeParseError(f"{ticker}: subtitle names {name!r}, "
+                               f"team_names[{code!r}] is {want!r}")
+    return code, name
 
 
 def fetch_series_fees(series: str) -> dict | None:
@@ -616,8 +669,14 @@ def _with_book_sizes(contracts: list[LadderContract],
 def fetch_ladder(series: str, event_ticker: str | None = None, *,
                  sport: str, spread: bool | None = None, strict: bool = True,
                  status: str | None = "open", with_sizes: bool = False,
+                 team_total: bool = False,
+                 team_names: dict[str, str] | None = None,
                  ) -> tuple[list[LadderContract] | None, SourceReport]:
     """Every contract on a Kalshi series (optionally one event), parsed.
+
+    team_total / team_names: passed to parse_contract for a TEAMTOTAL series
+    (team_names required with it, checked before any request). Never
+    inferred from the name. Team-total rungs then sort by team.
 
     Capture scope stays permanently decoupled from publication scope: this
     returns what the venue offers, and nothing about it says any of it may
@@ -655,6 +714,8 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
     """
     if status not in LADDER_STATUSES:
         raise ValueError(f"status must be one of {LADDER_STATUSES}, got {status!r}")
+    if team_total and team_names is None:
+        raise ValueError("team_total=True needs team_names {code: name}")
     if spread is None:
         spread = "SPREAD" in series.upper()
     params = {"series_ticker": series, "limit": 1000}
@@ -674,7 +735,9 @@ def fetch_ladder(series: str, event_ticker: str | None = None, *,
     bad: list[str] = []
     for m in rows:
         try:
-            out.append(parse_contract(m, spread=spread, fees=fees))
+            out.append(parse_contract(m, spread=spread, fees=fees,
+                                      team_total=team_total,
+                                      team_names=team_names))
         except StrikeParseError:
             if strict:
                 raise

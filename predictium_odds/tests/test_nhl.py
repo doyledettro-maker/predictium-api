@@ -110,8 +110,16 @@ def test_total_goals_floor_is_the_over_line_and_has_no_team():
     assert c.yes_means == "over 6.5"
 
 
+NAMES = {"UTA": "Utah", "COL": "Colorado"}   # the NHL repo's own table, in use
+
+
+def _tt(row, **kw):
+    return parse_contract(row, spread=False, team_total=True,
+                          team_names=kw.pop("team_names", NAMES), **kw)
+
+
 def test_team_total_carries_its_team_so_the_two_ladders_stay_apart():
-    got = [parse_contract(r, spread=False) for r in TEAM_TOTAL]
+    got = [_tt(r) for r in TEAM_TOTAL]
     assert [(c.team_code, c.subject, c.over_line) for c in got] == [
         ("UTA", "Utah", 3.5), ("UTA", "Utah", 2.5),
         ("COL", "Colorado", 3.5), ("COL", "Colorado", 2.5)]
@@ -119,10 +127,79 @@ def test_team_total_carries_its_team_so_the_two_ladders_stay_apart():
     assert all(c.kind == "over" and c.spread_line is None for c in got)
 
 
+def test_without_the_flag_a_team_total_parses_exactly_as_before():
+    c = parse_contract(TEAM_TOTAL[0], spread=False)
+    assert (c.team_code, c.subject, c.over_line) == (None, None, 3.5)
+
+
+def test_the_flag_needs_the_name_table():
+    with pytest.raises(ValueError):
+        parse_contract(TEAM_TOTAL[0], spread=False, team_total=True)
+
+
+def _variant(ticker_suffix=None, sub=None, floor=None, event=None):
+    row = dict(TEAM_TOTAL[0])          # UTA4, "Utah over 3.5", floor 3.5
+    if ticker_suffix is not None:
+        row["ticker"] = "KXNHLTEAMTOTAL-26NOV18COLUTA-" + ticker_suffix
+    if sub is not None:
+        row["yes_sub_title"] = sub
+    if floor is not None:
+        row["floor_strike"] = floor
+    if event is not None:
+        row["event_ticker"] = event
+    return row
+
+
+# Each case below parsed cleanly at 2e010cff (review of #30).
+@pytest.mark.parametrize("row, why", [
+    (_variant(sub="Colorado over 3.5"), "subtitle names the other team"),
+    (_variant(ticker_suffix="COL4"), "code is the other team, subtitle Utah"),
+    (_variant(ticker_suffix="BOS4", sub="Boston over 3.5"), "team not in the event"),
+    (_variant(ticker_suffix="UTA9"), "rung is not floor + 0.5"),
+    (_variant(sub="Anything at all over 3.5"), "subtitle is not the team"),
+    (_variant(ticker_suffix="4"), "no team code in the ticker"),
+    (_variant(sub="Utah: 4+"), "a prop-style subtitle"),
+    (_variant(event="KXNHLTEAMTOTAL-COLUTA"), "no matchup segment in the event"),
+    (_variant(ticker_suffix="ARI4", sub="Arizona over 3.5"),
+     "code in neither end of the matchup"),
+])
+def test_a_team_total_fails_closed(row, why):
+    with pytest.raises(kalshi.StrikeParseError):
+        _tt(row,
+            team_names={**NAMES, "BOS": "Boston", "ARI": "Arizona"})
+
+
+def test_a_code_missing_from_the_name_table_raises():
+    with pytest.raises(kalshi.StrikeParseError):
+        _tt(TEAM_TOTAL[0], team_names={"COL": "Colorado"})
+
+
 def test_a_team_total_whose_subtitle_disagrees_with_its_strike_still_raises():
     bad = dict(TEAM_TOTAL[0], yes_sub_title="Utah over 4.5")  # floor is 3.5
     with pytest.raises(kalshi.StrikeParseError):
-        parse_contract(bad, spread=False)
+        _tt(bad)
+
+
+def test_team_total_and_spread_together_raise():
+    with pytest.raises(kalshi.StrikeParseError):
+        parse_contract(TEAM_TOTAL[0], spread=True, team_total=True,
+                       team_names=NAMES)
+
+
+def test_wins_by_text_on_a_non_spread_contract_raises():
+    with pytest.raises(kalshi.StrikeParseError):
+        parse_contract(SPREAD[0], spread=False)
+
+
+@pytest.mark.parametrize("ticker, event, sub, floor", [
+    ("KXNBATEAMTOTAL-26NOV18BOSNYK-BOS115", "KXNBATEAMTOTAL-26NOV18BOSNYK",
+     "Boston over 114.5", 114.5),
+    ("KXATPGAMES-26NOV18SINALC-SIN22", "KXATPGAMES-26NOV18SINALC",
+     "Sinner over 21.5", 21.5),
+])
+def test_other_sports_are_untouched_without_the_flag(ticker, event, sub, floor):
+    c = parse_contract(_k(ticker, event, "greater", floor, sub, ""), spread=False)
+    assert (c.team_code, c.subject, c.over_line) == (None, None, floor)
 
 
 def test_props_and_totals_keep_their_old_subject_rules():
@@ -159,18 +236,28 @@ def venue(monkeypatch):
     return install
 
 
-@pytest.mark.parametrize("series, rows, kind", [
-    ("KXNHLSPREAD", SPREAD, "spread"),
-    ("KXNHLTOTAL", TOTAL, "over"),
-    ("KXNHLTEAMTOTAL", TEAM_TOTAL, "over"),
+@pytest.mark.parametrize("series, rows, kind, extra", [
+    ("KXNHLSPREAD", SPREAD, "spread", {}),
+    ("KXNHLTOTAL", TOTAL, "over", {}),
+    ("KXNHLTEAMTOTAL", TEAM_TOTAL, "over",
+     {"team_total": True, "team_names": {"UTA": "Utah", "COL": "Colorado"}}),
 ])
-def test_each_ladder_series_captures_with_fees(venue, series, rows, kind):
+def test_each_ladder_series_captures_with_fees(venue, series, rows, kind, extra):
     seen = venue(rows)
-    got, rep = kalshi.fetch_ladder(series, sport="nhl")
+    got, rep = kalshi.fetch_ladder(series, sport="nhl", **extra)
     assert rep.ok and rep.n_markets == len(rows)
     assert seen[0]["series_ticker"] == series
     assert {c.kind for c in got} == {kind}
     assert all(c.fee_type == "quadratic_with_maker_fees" for c in got)
+    if extra:
+        assert {c.team_code for c in got} == {"UTA", "COL"}
+
+
+def test_fetch_ladder_team_total_needs_names_before_any_request(venue):
+    seen = venue(TEAM_TOTAL)
+    with pytest.raises(ValueError):
+        kalshi.fetch_ladder("KXNHLTEAMTOTAL", sport="nhl", team_total=True)
+    assert seen == []
 
 
 @pytest.mark.parametrize("series", sorted(NHL_SERIES.values()))

@@ -127,9 +127,16 @@ delete the fallback a season later, not sooner.
 - NHL (0.3.3, verified live 2026-11-17; `books.kalshi.NHL_SERIES`):
   `KXNHLGAME` (winner, full game including overtime and shootout),
   `KXNHLSPREAD` (puck line, team-oriented), `KXNHLTOTAL` (total goals) and
-  `KXNHLTEAMTOTAL` (one team's goals). Team-total contracts carry
-  `team_code` from the ticker suffix and `subject` from the subtitle, so the
-  two teams' ladders in one event stay apart. `KXNHLWINS` and the player-prop
+  `KXNHLTEAMTOTAL` (one team's goals). Read team totals with
+  `fetch_ladder("KXNHLTEAMTOTAL", sport="nhl", team_total=True,
+  team_names={code: name})`; the name table is required. Each rung then
+  carries `team_code` and `subject`, and parsing raises unless:
+  - the ticker's code is one of the event's two teams;
+  - the rung equals the floor plus 0.5;
+  - the subtitle reads "<name> over <line>" and that name is
+    `team_names[code]`.
+  Without `team_total=True` (the default) every series parses exactly as
+  in 0.3.2. "Wins by" text on a non-spread contract now raises. `KXNHLWINS` and the player-prop
   series (`KXNHLGOAL`, `KXNHLPTS`, `KXNHLAST`, `KXNHLSAVES`,
   `KXNHLFIRSTGOAL`) are listed but had nothing open that day, so they are
   not verified yet.
