@@ -2,6 +2,28 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.3.3 (2026-11-17)
+
+NHL. Additive: every existing caller and every existing test is unchanged.
+
+- `books.kalshi.NHL_SERIES`: KXNHLGAME, KXNHLSPREAD, KXNHLTOTAL and
+  KXNHLTEAMTOTAL, verified live against `/series` and `/markets` (tickers,
+  strike types, rules text, fee terms). They go through the existing
+  `fetch_game_quotes` and `fetch_ladder`.
+- `parse_contract`: a team-total contract ("Utah over 5.5", ticker
+  "...-UTA6") now carries `team_code` and `subject`. Before, both were
+  None, so the two teams' rungs in one event could not be told apart. Only
+  when the ticker suffix and the subtitle both name the team; game totals
+  and props are unchanged, and the subtitle cross-check still raises on a
+  disagreement.
+- `books.pinnacle.LEAGUE_IDS["nhl"] = 1456`, not yet verified live (403 from
+  the cloud session).
+- FanDuel and Bovada NHL need no code: the existing maps read moneyline,
+  puck line and total goals. FanDuel lists no per-game NHL team total.
+  Bovada is not yet verified live.
+- `tests/test_nhl.py`: 23 tests, fixtures shaped on the live rows with
+  synthetic prices.
+
 ## 0.3.2 (2026-11-09)
 
 Kalshi reads now retry HTTP 500, 502, 503 and 504 exactly like 429: the same

@@ -123,9 +123,44 @@ delete the fallback a season later, not sooner.
 - API shape 2026-07: legacy integer-cent fields return null; prices are in
   `*_dollars` strings. Anything reading `yes_bid` as an int gets nulls.
 - Series naming is uniform: `KX{SPORT}{GAME|SPREAD|TOTAL|WINS|MATCH}` —
-  NFL/NBA/WNBA/MLB/NCAAF + `KXATPMATCH`/`KXWTAMATCH`.
+  NFL/NBA/WNBA/MLB/NCAAF/NHL + `KXATPMATCH`/`KXWTAMATCH`.
+- NHL (0.3.3, verified live 2026-11-17; `books.kalshi.NHL_SERIES`):
+  `KXNHLGAME` (winner, full game including overtime and shootout),
+  `KXNHLSPREAD` (puck line, team-oriented), `KXNHLTOTAL` (total goals) and
+  `KXNHLTEAMTOTAL` (one team's goals). Team-total contracts carry
+  `team_code` from the ticker suffix and `subject` from the subtitle, so the
+  two teams' ladders in one event stay apart. `KXNHLWINS` and the player-prop
+  series (`KXNHLGOAL`, `KXNHLPTS`, `KXNHLAST`, `KXNHLSAVES`,
+  `KXNHLFIRSTGOAL`) are listed but had nothing open that day, so they are
+  not verified yet.
 - Thin contracts (spread > `MAX_SPREAD` = $0.10) are dropped and counted in
   the report note — treat thin exchanges like thin books.
+
+## NHL (0.3.3)
+
+```python
+CFG = SportConfig(
+    sport="nhl",
+    resolve_team=NHL_NAME_TO_ABBR.get,         # the NHL repo's own table
+    event_key=lambda home, away, start_iso: f"{away}@{home}_{start_iso[:10]}",
+    bovada_path="/hockey/nhl",
+    fanduel_page_id="nhl",
+    kalshi_prefix="KXNHL",                     # -> KXNHLGAME/SPREAD/TOTAL/TEAMTOTAL
+)
+```
+
+- FanDuel: the NHL lobby uses `MONEY_LINE`, `MATCH_HANDICAP_(2-WAY)` (Puck
+  Line) and `TOTAL_POINTS_(OVER/UNDER)` (Total Goals), which the existing
+  map already reads (verified live 2026-11-17). FanDuel lists no per-game
+  team total for NHL. `TEAM_TOTAL_POINTS_SGP` on the lobby is a season
+  standings-points future, and it is not mapped.
+- Bovada: the parser already reads "Puck Line". `/hockey/nhl` is not yet
+  verified live: Bovada returns nothing to the cloud session (NFL included),
+  so the first run from the Mac mini must confirm it.
+- Pinnacle: league 1456, internal only as always. Not yet verified live
+  (the guest API answers 403 to the cloud session).
+- Fees: `KXNHLGAME` is `quadratic_with_maker_fees` x 1, the other three are
+  `quadratic` x 1. Both are handled by `oddsmath.kalshi_taker_fee`.
 
 ## Tests
 

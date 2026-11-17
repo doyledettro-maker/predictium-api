@@ -3,9 +3,10 @@ we never do). CFTC-regulated exchange: prices are two-sided probabilities
 with no bookmaker vig. NEVER de-vig a Kalshi quote.
 
 Series naming is uniform: KX{SPORT}{GAME|SPREAD|TOTAL|WINS|MATCH|SERIES}
-(verified live: NFL/NBA/WNBA/MLB/NCAAF + KXATPMATCH/KXWTAMATCH; plus
+(verified live: NFL/NBA/WNBA/MLB/NCAAF/NHL + KXATPMATCH/KXWTAMATCH; plus
 championship/outright series like KXNBA, KXMLBWS). cfg.kalshi_prefix is the
-KX{SPORT} stem.
+KX{SPORT} stem. NHL (verified live 2026-11-17, NHL_SERIES below): the stem is
+KXNHL, with KXNHLGAME / KXNHLSPREAD (puck line) / KXNHLTOTAL / KXNHLTEAMTOTAL.
 
 API shape (2026-07): the legacy integer-cent fields (yes_bid, yes_ask,
 last_price, volume) return null — prices live in the "*_dollars" string
@@ -329,6 +330,29 @@ _KPLUS_RE = re.compile(r"(?<![\d.])(\d+)\+")
 _OVER_RE = re.compile(r"\b(?:over|more than)\s+(-?\d+(?:\.\d+)?)", re.IGNORECASE)
 _SPREAD_TEXT_RE = re.compile(r"\bwins by (?:over|more than)\b", re.IGNORECASE)
 _TEAM_SUFFIX_RE = re.compile(r"-(?P<code>[A-Z]+?)(?P<rung>\d+)$")
+# Team totals: "Utah over 5.5" on ticker "...-UTA6" (KXNHLTEAMTOTAL, 2026-11-17).
+_TEAM_OVER_RE = re.compile(r"^(?P<who>.+?)\s+(?:over|more than)\s+-?\d",
+                           re.IGNORECASE)
+
+# The NHL series, by what they settle on (verified live 2026-11-17 against
+# GET /series and /markets: tickers, strike types, rules text, fee terms).
+# Reference only: pass these to fetch_game_quotes / fetch_ladder.
+#   KXNHLGAME      structured, "If San Jose wins the ... NHL game": the full
+#                  game, overtime and shootout included, like a book moneyline.
+#                  fee_type quadratic_with_maker_fees, multiplier 1.
+#   KXNHLSPREAD    greater, half-point, "Vegas wins by over 2.5 goals": the
+#                  puck line, team-oriented (VGK -2.5).
+#   KXNHLTOTAL     greater, half-point, "Over 8.5 goals scored".
+#   KXNHLTEAMTOTAL greater, half-point, "Utah over 5.5": one team's goals,
+#                  team code from the ticker suffix.
+# Listed but with nothing open on 2026-11-17, so not verified: KXNHLWINS and
+# the player props KXNHLGOAL, KXNHLPTS, KXNHLAST, KXNHLSAVES, KXNHLFIRSTGOAL.
+NHL_SERIES = {
+    "game": "KXNHLGAME",
+    "spread": "KXNHLSPREAD",
+    "total": "KXNHLTOTAL",
+    "team_total": "KXNHLTEAMTOTAL",
+}
 
 
 @dataclass(frozen=True)
@@ -340,7 +364,7 @@ class LadderContract:
     event_ticker: str
     kind: str                       # "over" | "spread" | "outcome"
     over_line: float | None         # YES = outcome > over_line (half-point)
-    team_code: str | None           # spread only: Kalshi's code, unmapped
+    team_code: str | None           # spread and team total: Kalshi's code, unmapped
     spread_line: float | None       # spread only: -over_line, for team_code
     outcome: str | None             # "outcome" only: yes_sub_title
     subject: str | None             # player / team text from the subtitle
@@ -477,7 +501,16 @@ def parse_contract(m: dict, *, spread: bool,
 
     subject = sub.split(":", 1)[0].strip() if ":" in sub else None
     if not spread:
-        return LadderContract(kind="over", over_line=over, team_code=None,
+        # A team total ("Utah over 5.5", ticker "...-UTA6") names its team in
+        # both places; carry both, or the two teams' rungs in one event are
+        # indistinguishable. Only when BOTH are present: a game total ("Over
+        # 8.5", ticker "...-9") and a prop ("Name: 9+") are unchanged.
+        team_code = None
+        tm = _TEAM_SUFFIX_RE.search(ticker)
+        who = _TEAM_OVER_RE.match(sub) if subject is None else None
+        if tm and who:
+            team_code, subject = tm.group("code"), who.group("who").strip()
+        return LadderContract(kind="over", over_line=over, team_code=team_code,
                               spread_line=None, outcome=None, subject=subject,
                               **common)
 
