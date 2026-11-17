@@ -2,9 +2,26 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.3.4 (2026-11-17)
+
+Team totals only (`team_total=True`); without the flag nothing changes.
+
+- `parse_contract(..., team_total=True)` also raises `StrikeParseError` on a
+  structured row (before, it returned an outcome with `team_code` None) and
+  on a ticker that is not under its event (does not start with
+  `event_ticker + "-"`).
+- `tests/test_nhl.py`: 45 tests (40 before). New fail-closed cases for a rung of
+  floor - 0.5, a lowercase subtitle name, a code found only in the middle
+  of the matchup ("LA" in "STLAVGK"), a ticker under another event and a
+  structured row. The missing-`team_names` test now checks the exact
+  ValueError, since `StrikeParseError` is itself a ValueError. Each of
+  these guards was removed in turn and a test failed every time.
+
 ## 0.3.3 (2026-11-17)
 
-NHL. Additive: every existing caller and every existing test is unchanged.
+NHL. One behaviour change for existing callers: "wins by" text on a
+non-spread contract now raises `StrikeParseError`. Everything else is
+additive, and every existing test is unchanged.
 
 - `books.kalshi.NHL_SERIES`: KXNHLGAME, KXNHLSPREAD, KXNHLTOTAL and
   KXNHLTEAMTOTAL, verified live against `/series` and `/markets` (tickers,

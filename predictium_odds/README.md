@@ -131,19 +131,23 @@ delete the fallback a season later, not sooner.
   `fetch_ladder("KXNHLTEAMTOTAL", sport="nhl", team_total=True,
   team_names={code: name})`; the name table is required. Each rung then
   carries `team_code` and `subject`, and parsing raises unless:
-  - the ticker's code is one of the event's two teams;
+  - the row has a strike (a structured row raises);
+  - the ticker is under its event (starts with the event ticker and "-");
+  - the ticker's code is one of the event's two teams (it starts or ends
+    the event's matchup segment);
   - the rung equals the floor plus 0.5;
   - the subtitle reads "<name> over <line>" and that name is
-    `team_names[code]`.
-  Without `team_total=True` (the default) every series parses exactly as
-  in 0.3.2. "Wins by" text on a non-spread contract now raises. `KXNHLWINS` and the player-prop
+    `team_names[code]`, matched exactly (case included).
+  Without `team_total=True` (the default) every series parses as in 0.3.2,
+  with one change from 0.3.3: "wins by" text on a non-spread contract now
+  raises. `KXNHLWINS` and the player-prop
   series (`KXNHLGOAL`, `KXNHLPTS`, `KXNHLAST`, `KXNHLSAVES`,
   `KXNHLFIRSTGOAL`) are listed but had nothing open that day, so they are
   not verified yet.
 - Thin contracts (spread > `MAX_SPREAD` = $0.10) are dropped and counted in
   the report note — treat thin exchanges like thin books.
 
-## NHL (0.3.3)
+## NHL (0.3.3, team-total checks 0.3.4)
 
 ```python
 CFG = SportConfig(
