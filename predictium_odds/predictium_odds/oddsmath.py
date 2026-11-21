@@ -57,24 +57,64 @@ def devig_proportional(p_a: float, p_b: float) -> tuple[float, float]:
     return p_a / s, p_b / s
 
 
+SHIN_BISECTION_STEPS = 200
+
+
+def _shin_probs(implied: list[float], z: float) -> list[float]:
+    s = sum(implied)
+    return [(math.sqrt(z * z + 4 * (1 - z) * pi * pi / s) - z) / (2 * (1 - z))
+            for pi in implied]
+
+
+def shin_z(implied: list[float]) -> float:
+    """Shin's insider-trading share z for a book with overround: the root of
+    sum_i q_i(z) = 1, where q_i(z) = (sqrt(z^2 + 4(1-z) pi_i^2 / S) - z)
+    / (2(1-z)) and S = sum_i pi_i.
+
+    Solved by bisection on z in [0, 1). sum q_i(0) = sqrt(S) > 1 for S > 1,
+    and as z -> 1 the sum falls to sum pi_i^2 / S < 1 when every pi_i < 1,
+    so a root always lies inside and the sum is decreasing across it.
+
+    0.3.5 (2026-11-21): this replaces a closed form that was wrong for
+    two-way markets. It went negative on lopsided markets, clamped to 0 and
+    returned the proportional de-vig ((0.70, 0.35) gave 0.6667, not 0.6750),
+    and it overshot on near-even ones ((0.55, 0.50) gave 0.5289, not 0.5250).
+    """
+    if len(implied) < 2:
+        raise ValueError("need >= 2 outcomes")
+    for pi in implied:
+        if not (0.0 < pi < 1.0) or math.isnan(pi):
+            raise ValueError(f"implied probabilities must be in (0, 1), got {pi}")
+    if sum(implied) <= 1.0:
+        raise ValueError("Shin needs an overround book (sum of implied > 1)")
+    lo, hi = 0.0, 1.0
+    for _ in range(SHIN_BISECTION_STEPS):
+        mid = (lo + hi) / 2
+        if sum(_shin_probs(implied, mid)) > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2
+
+
 def devig_shin(p_a: float, p_b: float) -> tuple[float, float]:
-    """Shin (1993) two-outcome de-vig (ported from wnba_model.betting.ev —
-    the org's canonical ML de-vig): solves for insider mass z, correcting
-    the favorite-longshot bias proportional de-vig leaves in. Falls back to
-    proportional when the market has no overround."""
-    s = p_a + p_b
-    if s <= 1.0:
+    """Shin (1993) two-outcome de-vig: removes the overround while correcting
+    the favourite-longshot bias that proportional de-vig leaves in (the
+    longshot is derated more than proportionally). Falls back to
+    proportional when the market has no overround.
+
+    For two outcomes Shin has an exact identity: each side loses half the
+    overround, q_a = p_a - (S - 1) / 2 (Clarke, Kovalchik and Ingram 2017).
+    The numerical solve reproduces it; the identity is the test, not the
+    method, so the same code serves an n-way book.
+
+    0.3.5 fixes a closed form for z that silently returned proportional on
+    lopsided markets; see shin_z.
+    """
+    if p_a + p_b <= 1.0:
         return devig_proportional(p_a, p_b)
-    z = ((s - 1.0) * (p_a * p_b * 4 / s - (s - 1.0))
-         / (p_a * p_b * 4 / s - 1.0)) if p_a * p_b * 4 / s != 1.0 else 0.0
-    z = max(0.0, min(z, 0.2))
-
-    def shin_prob(pi: float) -> float:
-        return (math.sqrt(z ** 2 + 4 * (1 - z) * pi ** 2 / s) - z) \
-            / (2 * (1 - z))
-
-    q_a, q_b = shin_prob(p_a), shin_prob(p_b)
-    t = q_a + q_b
+    q_a, q_b = _shin_probs([p_a, p_b], shin_z([p_a, p_b]))
+    t = q_a + q_b                  # 1 to bisection precision; normalise
     return q_a / t, q_b / t
 
 
