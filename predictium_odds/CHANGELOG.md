@@ -2,6 +2,31 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.3.5 (2026-11-21)
+
+**Bug fix that changes numbers.** `oddsmath.devig_shin` solved Shin's z
+with a two-way closed form that was wrong. On lopsided markets z came out
+negative and was clamped to 0, so the function returned the PROPORTIONAL
+de-vig; on near-even markets it overshot and clamped to 0.2. The favourite-
+longshot correction it exists for was never applied on lopsided markets.
+
+| implied (a, b) | 0.3.4 and earlier | proportional | 0.3.5 (true Shin) |
+|---|---|---|---|
+| 0.70, 0.35 | 0.6667 | 0.6667 | 0.6750 |
+| 0.90, 0.15 | 0.8571 | 0.8571 | 0.8750 |
+| 0.55, 0.50 | 0.5289 | 0.5238 | 0.5250 |
+
+- z is now the numerical root of sum(q_i) = 1 (`oddsmath.shin_z`, bisection
+  on [0, 1)). It reproduces the exact two-outcome identity, q_a = p_a -
+  (S - 1) / 2, and agrees with soccer's independent n-way solver.
+- `shin_z` raises ValueError for an implied probability outside (0, 1), for
+  fewer than two outcomes, and for a book with no overround. `devig_shin`
+  still falls back to proportional when there is no overround.
+- The existing `test_shin_shrinks_longshot_more_than_proportional` passed
+  under the bug by 5.5e-17 of float noise; the new derating test requires a
+  real margin.
+- Every release from 0.1.0 (`2da418a`) to 0.3.4 carries the bug.
+
 ## 0.3.4 (2026-11-17)
 
 Team totals only (`team_total=True`); without the flag nothing changes.
