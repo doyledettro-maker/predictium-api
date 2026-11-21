@@ -114,20 +114,18 @@ These are org rules, several of them written in blood.
   - **Every other rule still applies to it**: per-book rows, pre-game
     only, identity through committed alias tables, main-line alignment,
     fail soft but never silent, and the three read outcomes.
-  - **Open, not settled here (for Portfolio):** (a) the Pinnacle rule
-    below is about the bookmaker, not the transport. A Pinnacle price
-    that arrives through The Odds API is still a Pinnacle price, and this
-    doc treats it as INTERNAL-ONLY until Doyle rules otherwise. (b) A repo
-    with a terms-clearance gate on scheduled capture (CFB's
-    `capture/terms_clearance.json`, default DENY) needs a ratified row for
-    The Odds API before a scheduled tape of it runs there. (c) Historical
-    prices already pulled under the 2026-08-13 rule were collected and
-    stored as INTERNAL-ONLY (golf's `data/internal/theoddsapi/`, the
-    manifests' `endpoint_policy: "historical_only"`). Keep them internal
-    until Portfolio says the new display boundary reaches back to them.
+  - **Ruled (Portfolio, 2026-11-21; conservative defaults Doyle may
+    loosen):** (a) a Pinnacle price that arrives through The Odds API
+    stays INTERNAL-ONLY, because the Pinnacle rule follows the bookmaker,
+    not the transport; (b) in CFB no scheduled Odds API tape runs until
+    `capture/terms_clearance.json` (default DENY) has a ratified row for
+    it, which comes with CFB's own spec; (c) historical prices already
+    pulled as INTERNAL-ONLY (golf's `data/internal/theoddsapi/`, the
+    manifests' `endpoint_policy: "historical_only"`, and the rest) stay
+    internal: the display boundary is forward-looking only.
   - **A shared client** (one `predictium_odds` adapter with the credit cap
-    and credit logging built in, so no repo writes its own) is a proposed
-    spec, not built: §7.
+    and credit logging built in, so no repo writes its own) is approved as
+    a spec to write after the Linux migration, not built: §7.
 - **Keys via GitHub Actions secrets / env only.** Never committed. Every
   source is keyless except The Odds API (above); any other source that
   needs a key is a Doyle decision, not a default.
@@ -389,7 +387,7 @@ In-season all-sources-down exits non-zero in NBA/WNBA/MLB.
   Kalshi `KXNFLWINS`, all 32/32. Kalshi anchor published on the power board
   (`kalshi_prob_over` / `kalshi_implied_wins` / `kalshi_ticker`) and rendered
   as a teal "Kalshi (exchange)" pill.
-- **NBA** — off The Odds API entirely (as of 2026-07; since 2026-11-21 it
+- **NBA**: off The Odds API entirely (as of 2026-07; since 2026-11-21 it
   may come back under §3's terms). New direct-book fetcher (Bovada +
   FanDuel + ESPN/DK, consensus row). Kalshi publisher rebuilt with
   legacy-identical gameIds; plist staged but **not loaded** — season-start
@@ -571,8 +569,8 @@ In rough priority order:
    soccer/tennis liquidity, but account + non-US geo — a business decision).
 
 
-7. **A shared The Odds API client (proposed spec, low priority, after the
-   Linux migration; Portfolio 2026-11-21).** One `predictium_odds` adapter
+7. **A shared The Odds API client (spec approved to write, Portfolio
+   2026-11-21; after the Linux migration, Monday 11-23 or later).** One `predictium_odds` adapter
    every sport uses, so no repo writes its own: the key read from env only
    and never in a log line or exception; a required per-job credit cap
    that refuses the call once the budget would be exceeded; the credits
