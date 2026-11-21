@@ -1,6 +1,6 @@
 # Books & Odds session — role handover
 
-_Last updated 2026-08-13. Started by the session that built the shared odds
+_Last updated 2026-11-21 (§3: The Odds API authorized for live use). Started by the session that built the shared odds
 layer; maintained by each session that holds the Books/Odds role (any sport)._
 
 **If you are reading this off `main`, check the date above.** The 2026-08-02
@@ -83,48 +83,54 @@ one-repo-at-a-time work behind a flag with a parity check (§7).
 
 These are org rules, several of them written in blood.
 
-- **The Odds API: banned from all ongoing ingestion; historical pulls for
-  training/backtesting are standing-authorized.** Amended 2026-08-02
-  (Doyle), and **widened 2026-08-13 (Doyle, verbatim): "we will use the
-  odds api for historical data pulls when we need historical odds for
-  training or back testing models; i just don't want to use it as part of
-  our live ingestion."** The original unconditional ban and the per-task
-  approval step are both superseded; NBA's removal as the last ongoing
-  consumer still stands. The two halves are not negotiable against each
-  other:
-  - **Never in a live path.** No adapter in `predictium_odds`, no client in
-    any repo's `books/` package, no import reachable from a publisher, cron,
-    launchd job, or scheduled workflow. The live tape stays keyless
-    direct-book + exchange. A PR adding it to an ingestion path is still
-    refused on sight.
-  - **Permitted, standing:** pulls of *historical* odds for model training
-    or backtesting. **No per-task approval is required** (2026-08-13) —
-    if you need historical odds to train or backtest, pull them. The
-    authorization is scoped by PURPOSE, not by a ticket: training and
-    backtesting yes; anything that runs on a schedule or feeds the live
-    tape, no, and that is not a grey area.
-    The containment obligations below are what the permission is
-    conditional on, and they did not loosen.
-  - **Every pull lands as a committed, reproducible artifact** — script,
-    cached payload, and provenance (endpoint, params, fetch timestamp,
-    credits spent) — the same standard as any Claudia bulk pull. A number
-    that can't be re-derived from a committed artifact didn't happen.
-  - **Key via env / GitHub Actions secrets only**, never committed. Note this
-    is the first non-keyless source in the stack; the "everything is keyless"
-    assumption below no longer holds without qualification.
-  - **Redistribution boundary — the one that bites.** Treat Odds API data
-    exactly like Pinnacle: INTERNAL-ONLY, `redistributable=False`. No
-    Odds-API-derived price may reach a published artifact or the public-read
-    predictions bucket, attributed or not. Model metrics *computed against*
-    it (log loss, CLV, calibration) are publishable; the prices themselves,
-    and any per-book table containing them, are not. This is the live risk:
-    several repos publish `backtest.json` objects measured against closing
-    lines straight to the public bucket, so a historical backfill that
-    silently becomes a published benchmark column is a licensing exposure,
-    not just a style violation.
-- **Keys via GitHub Actions secrets / env only.** Never committed. Note that
-  every source we use today is keyless — if a new one needs a key, that's a
-  Doyle decision, not a default.
+- **The Odds API: authorized for live and ongoing ingestion as well as
+  historical pulls, in every sport (Doyle, 2026-11-21, relayed by
+  Portfolio).** Doyle, verbatim: "now that we are spending on the odds
+  api; i'm ok using it as a live source for odds", confirmed for all
+  sports. The fleet rule is now the NFL repo's 2026-10-07 terms. This
+  supersedes the 2026-08-13 rule (historical only, never live) and the
+  2026-08-02 amendment before it; a repo whose CLAUDE.md still says
+  "banned in any live or ongoing ingestion path" is stale until that
+  repo's own change updates it. The obligations the permission rests on:
+  - **The key stays in env / keychain only.** Never printed, committed,
+    logged, put in a URL that is logged, or sent to Slack. It is the one
+    keyed odds source in the stack; every other source stays keyless.
+  - **Every job that calls it sets a credit cap and logs the credits it
+    used.** A job with no cap does not ship. Log the count, never the key.
+  - **Display boundary.** Its prices may appear on Predictium pages and
+    inside our own model payloads, including next to our numbers (its
+    terms allow "displaying our data in a UI, website, or mobile app,
+    including for commercial use"). They never publish as a standalone
+    data product or as our own API or data source: no published object
+    whose purpose is the prices themselves, no raw price dump and no bulk
+    historical price file on the public-read bucket.
+  - **Bookmaker names** are for identification and factual comparison
+    only.
+  - **Historical pulls still land as committed, reproducible artifacts**:
+    script, cached payload and provenance (endpoint, params, fetch
+    timestamp, credits spent). A number that can't be re-derived from a
+    committed artifact didn't happen. `scripts/ingest_theoddsapi_golf.py`
+    in the golf repo remains the reference shape for that.
+  - **Every other rule still applies to it**: per-book rows, pre-game
+    only, identity through committed alias tables, main-line alignment,
+    fail soft but never silent, and the three read outcomes.
+  - **Open, not settled here (for Portfolio):** (a) the Pinnacle rule
+    below is about the bookmaker, not the transport. A Pinnacle price
+    that arrives through The Odds API is still a Pinnacle price, and this
+    doc treats it as INTERNAL-ONLY until Doyle rules otherwise. (b) A repo
+    with a terms-clearance gate on scheduled capture (CFB's
+    `capture/terms_clearance.json`, default DENY) needs a ratified row for
+    The Odds API before a scheduled tape of it runs there. (c) Historical
+    prices already pulled under the 2026-08-13 rule were collected and
+    stored as INTERNAL-ONLY (golf's `data/internal/theoddsapi/`, the
+    manifests' `endpoint_policy: "historical_only"`). Keep them internal
+    until Portfolio says the new display boundary reaches back to them.
+  - **A shared client** (one `predictium_odds` adapter with the credit cap
+    and credit logging built in, so no repo writes its own) is a proposed
+    spec, not built: §7.
+- **Keys via GitHub Actions secrets / env only.** Never committed. Every
+  source is keyless except The Odds API (above); any other source that
+  needs a key is a Doyle decision, not a default.
 - **The predictions bucket is public-read.** Nothing licensed, private, or
   provider-restricted may ever be uploaded to it.
 - **Pinnacle is INTERNAL-ONLY.** Its adapter marks every quote
@@ -383,7 +389,8 @@ In-season all-sources-down exits non-zero in NBA/WNBA/MLB.
   Kalshi `KXNFLWINS`, all 32/32. Kalshi anchor published on the power board
   (`kalshi_prob_over` / `kalshi_implied_wins` / `kalshi_ticker`) and rendered
   as a teal "Kalshi (exchange)" pill.
-- **NBA** — off The Odds API entirely. New direct-book fetcher (Bovada +
+- **NBA** — off The Odds API entirely (as of 2026-07; since 2026-11-21 it
+  may come back under §3's terms). New direct-book fetcher (Bovada +
   FanDuel + ESPN/DK, consensus row). Kalshi publisher rebuilt with
   legacy-identical gameIds; plist staged but **not loaded** — season-start
   checklist in `nba_prediction_model_2026/ODDS_MIGRATION_2026-07.md`.
@@ -563,6 +570,19 @@ In rough priority order:
    genuinely interesting unexplored candidate (documented API, deep
    soccer/tennis liquidity, but account + non-US geo — a business decision).
 
+
+7. **A shared The Odds API client (proposed spec, low priority, after the
+   Linux migration; Portfolio 2026-11-21).** One `predictium_odds` adapter
+   every sport uses, so no repo writes its own: the key read from env only
+   and never in a log line or exception; a required per-job credit cap
+   that refuses the call once the budget would be exceeded; the credits
+   used, read from the response headers, returned with every read and
+   logged by the caller; the three read outcomes kept apart (a 429 or 5xx
+   is FAILED, never an empty board); per-book rows tagged with the
+   bookmaker, with Pinnacle marked `redistributable=False` until Doyle
+   rules; and the same `Quote` shape as the keyless adapters, so swapping a
+   source is a config change. To be written as a spec and reviewed before
+   any code.
 ---
 
 ## 8. If you're the SOCCER Books/Odds session
@@ -616,5 +636,5 @@ one best-price path — or they drift.
 `backtest.json` measured against closing lines straight to the
 public-read bucket. That is the exact surface where a licensed or
 provider-restricted historical price could leak into a public artifact —
-watch it on any backfill (§3, The Odds API historical carve-out, and the
-Pinnacle rule).
+watch it on any backfill (§3: The Odds API display boundary, no bulk
+historical price file on the public bucket, and the Pinnacle rule).
