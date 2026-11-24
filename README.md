@@ -159,6 +159,13 @@ The API enforces subscription-based access:
 
 **Important**: Never trust frontend for feature gating. All access control is enforced server-side.
 
+## Deployment
+
+Production is built by the manual `predictium-api-ecr-build` CodeBuild project
+and served by the `predictium-api-service` ECS service in `us-east-2`. See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the exact build, rollout,
+verification, and rollback procedure.
+
 ## Development
 
 ### Running Tests
