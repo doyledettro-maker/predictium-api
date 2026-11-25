@@ -276,7 +276,7 @@ def _send(path: str, params: dict[str, Any]) -> _Response:
     """The ONLY place the key and a full URL exist. Every Exception is turned
     into a _Response here; the locals holding the key are cleared in the
     finally, so even a KeyboardInterrupt's frame shows no key."""
-    key = url = req = query = None
+    key = url = req = query = resp = None
     status: int | None = None
     headers: dict[str, str] = {}
     body: bytes | None = None
@@ -303,14 +303,14 @@ def _send(path: str, params: dict[str, Any]) -> _Response:
     except BaseException as e:
         # KeyboardInterrupt / SystemExit / GeneratorExit propagate, but bare:
         # no traceback into urllib's frames, no chained context, and this
-        # frame's key-bearing locals emptied first.
-        key = url = req = query = None
+        # frame's key-bearing locals are emptied by the finally below, which
+        # runs before anything can read this frame from the traceback.
         e.__traceback__ = None
         e.__context__ = None
         e.__cause__ = None
         raise e   # noqa: TRY201  (a bare raise would restore the traceback)
     finally:
-        key = url = req = query = None
+        key = url = req = query = resp = None   # resp.url carries the key
     return _Response(status, headers, body, error)
 
 
@@ -532,6 +532,7 @@ class _Counts:
     unresolved: int = 0
     inplay: int = 0
     no_books: int = 0
+    no_markets: int = 0
     unknown_book: int = 0
     bad_price: int = 0
     resolved_events: int = 0
@@ -566,6 +567,8 @@ def _quotes_from_events(events: list[dict], cfg: SportConfig, ts: str,
             continue
         for bm in ev.get("bookmakers") or []:
             bkey = bm.get("key") if isinstance(bm, dict) else None
+            if not isinstance(bkey, str):   # unhashable or absent: unknown
+                bkey = None
             if bkey not in BOOKMAKERS:
                 counts.unknown_book += 1
                 continue
@@ -575,12 +578,19 @@ def _quotes_from_events(events: list[dict], cfg: SportConfig, ts: str,
                       "last_update": bm.get("last_update"),
                       "license_class": LICENSE_INTERNAL if internal
                       else LICENSE_DISPLAY}
+            if not bm.get("markets"):
+                counts.no_markets += 1    # bookmaker listed, nothing posted
+                continue
             for mk in bm.get("markets") or []:
-                market = MARKETS.get(mk.get("key")) if isinstance(mk, dict) else None
+                mkey = mk.get("key") if isinstance(mk, dict) else None
+                market = MARKETS.get(mkey) if isinstance(mkey, str) else None
                 if market is None:
                     continue
                 for o in mk.get("outcomes") or []:
-                    name = o.get("name")
+                    name = o.get("name") if isinstance(o, dict) else None
+                    if not isinstance(name, str):
+                        counts.bad_price += 1
+                        continue
                     if market == MARKET_TOTAL:
                         side = {"Over": SIDE_OVER, "Under": SIDE_UNDER}.get(name)
                     else:
@@ -623,6 +633,8 @@ def _outcome(quotes: list[Quote], counts: _Counts) -> tuple[str, str]:
     detail = ", ".join(drops)
     if counts.no_books:
         drops.append(f"{counts.no_books} with no bookmaker prices yet")
+    if counts.no_markets:
+        drops.append(f"{counts.no_markets} bookmaker with no markets yet")
         detail = ", ".join(drops)
     if quotes:
         return "captured", detail

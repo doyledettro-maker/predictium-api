@@ -72,6 +72,10 @@ class FakeResp:
         self.headers = headers if headers is not None else {}
         self._body = body
         self._read_exc = read_exc
+        self.url = ""            # a real response's .url carries the key
+
+    def __repr__(self):
+        return f"<FakeResp {self.status} {self.url}>"
 
     def __enter__(self):
         return self
@@ -113,13 +117,15 @@ class Net:
         self.lock = threading.Lock()
 
     def open(self, req, timeout=None):
+        url = req.full_url       # a plain str local, as urllib's frames hold
         with self.lock:
-            self.requests.append(req.full_url)
+            self.requests.append(url)
             out = self.script.pop(0) if len(self.script) > 1 else self.script[0]
         if callable(out) and not isinstance(out, FakeResp):
             out = out(req)
         if isinstance(out, BaseException):
             raise out
+        out.url = url
         return out
 
     @property
@@ -215,16 +221,27 @@ def _chain(e, seen=None):
         e = None
 
 
-@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
-def test_1_interrupts_propagate_without_the_key(exc, net, waits):
-    """Review nit 1: BaseException escapes `except Exception`. It must
-    leave with no frame local and no chained exception holding the key."""
+def _interrupt_in_open(exc):
     def boom(req):
+        url = req.full_url
         try:
-            raise ValueError(f"inner {req.full_url}")
+            raise ValueError(f"inner {url}")
         except ValueError:
-            raise exc(f"stop {req.full_url[:0]}")
-    net(boom)
+            raise exc("stop") from None
+    return boom
+
+
+def _interrupt_in_read(exc):
+    return FakeResp(200, headers={"x-requests-last": "3"}, read_exc=exc("stop"))
+
+
+@pytest.mark.parametrize("where", [_interrupt_in_open, _interrupt_in_read])
+@pytest.mark.parametrize("exc", [KeyboardInterrupt, SystemExit])
+def test_1_interrupts_propagate_without_the_key(exc, where, net, waits):
+    """Review nit 1: BaseException escapes `except Exception`. It must
+    leave with no frame local and no chained exception holding the key,
+    whether it fires inside urlopen or inside the body read."""
+    net(where(exc))
     with pytest.raises(exc) as info:
         toa.read_odds(CFG, budget())
     e = info.value
@@ -232,6 +249,7 @@ def test_1_interrupts_propagate_without_the_key(exc, net, waits):
         assert SENTINEL not in repr(link) and SENTINEL not in str(link.args)
     tb = traceback.TracebackException.from_exception(e, capture_locals=True)
     assert SENTINEL not in "".join(tb.format())
+    assert e.__context__ is None and e.__cause__ is None
 
 
 def test_1_no_key_means_failed_without_a_request(monkeypatch, net):
@@ -598,6 +616,57 @@ def test_9_no_bookmakers_beside_an_unresolved_row_is_failed(net):
                                    home="New York Jets", away="Miami Dolphins")]))
     read = toa.read_odds(CFG, budget())
     assert read.status == "failed" and "1 unknown bookmaker" in read.report.note
+
+
+def test_9_missing_bookmakers_key_is_empty(net):
+    ev = event()
+    del ev["bookmakers"]
+    net(ok([ev]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "empty" and read.report.ok
+    assert "1 events listed, no bookmaker prices yet" in read.report.note
+
+
+def test_9_bookmaker_with_no_markets_is_empty(net):
+    bm = bookmaker("draftkings")
+    bm["markets"] = []
+    bm2 = bookmaker("fanduel")
+    del bm2["markets"]
+    net(ok([event(books=[bm, bm2])]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "empty" and read.report.ok
+    assert "2 bookmaker with no markets yet" in read.report.note
+
+
+def test_9_no_bookmakers_mixed_with_in_play_is_empty(net):
+    ev = event(eid="ev3", home="New York Jets", away="Miami Dolphins")
+    del ev["bookmakers"]
+    net(ok([event(books=[]), event(start=PAST, eid="ev2"), ev]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "empty" and read.report.ok
+    assert "3 events listed, no bookmaker prices yet" in read.report.note
+    assert "1 in-play dropped" in read.report.note
+
+
+@pytest.mark.parametrize("bad_key", [["draftkings"], {"k": 1}, None, 7])
+def test_9_unhashable_bookmaker_key_is_an_unknown_bookmaker(bad_key, net):
+    bm = bookmaker("draftkings")
+    bm["key"] = bad_key
+    net(ok([event(books=[bm, bookmaker("fanduel")])]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "captured" and len(read.quotes) == 6
+    assert "1 unknown bookmaker" in read.report.note
+
+
+def test_9_malformed_market_and_outcome_shapes_never_raise(net):
+    bm = bookmaker("draftkings")
+    bm["markets"][0]["key"] = ["h2h"]                 # unhashable market key
+    bm["markets"][1]["outcomes"][0] = "not a dict"    # malformed outcome
+    bm["markets"][2]["outcomes"][0]["name"] = ["Over"]
+    net(ok([event(books=[bm])]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "captured" and len(read.quotes) == 2
+    assert "2 bad price" in read.report.note
 
 
 def test_9_partial_drops_still_capture(net):

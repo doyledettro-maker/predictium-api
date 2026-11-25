@@ -20,6 +20,10 @@ No existing function changes behaviour.
   text. Redirects are refused.
 - Rows are tagged `theoddsapi:<bookmaker>` with a `license_class`; Pinnacle
   and all historical rows are internal-only.
+- Outcomes: events listed with no bookmakers, and bookmakers listed with no
+  markets, are EMPTY ("no bookmaker prices yet", Portfolio ruling
+  2026-11-25); FAILED is kept for rows present but unresolved. Malformed
+  bookmaker, market or outcome shapes are skipped and counted, never raised.
 - Review nits folded in: a missing `x-requests-remaining` on a billable
   response lowers the cached remaining by the amount charged; the README
   names the budget's `ValueError` as the one exception that leaves.
