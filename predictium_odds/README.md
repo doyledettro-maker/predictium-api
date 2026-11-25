@@ -28,16 +28,17 @@ this directory is the seed — split it out with history at that point.
 | `books.kalshi` | keyless exchange market data; game quotes, >= win-total ladders (`fetch_ladders`, `ladder_by_line`), every contract on any ladder (`fetch_ladder`, rule 8; `status` and `with_sizes` from 0.3.1), and one market by ticker (`fetch_market`, 0.3.1) |
 | `books.espn` | DraftKings lines via ESPN's public core API (`espn_dk`) |
 | `books.pinnacle` | guest API, **internal-only** (`redistributable=False`) |
+| `books.theoddsapi` | The Odds API v4, the one **keyed** source: live, per-event and historical odds under a required `CreditBudget` (0.4.0) |
 
 ## Rules (org invariants — do not weaken)
 
-1. **The Odds API is banned from ingestion.** No adapter for it will be
-   accepted — not here, not in a repo's `books/` package, not anywhere a
-   publisher or scheduled job can reach. (Doyle scoped the org ban to
-   *ongoing* ingestion on 2026-08-02: one-off HISTORICAL backfills for a
-   named modelling task are allowed, authorized per task, and live outside
-   this package as committed artifacts. That carve-out never authorizes an
-   adapter. Terms in the Books/Odds handover §3.)
+1. **The Odds API goes through `books.theoddsapi` and nothing else.**
+   Authorized fleet-wide for live, ongoing and historical reads (Doyle,
+   2026-11-21; terms in the Books/Odds handover §3). Its prices appear only
+   inside our own model payloads and pages, never as a standalone feed, a
+   raw dump or a bulk historical file on the public bucket. Pinnacle rows
+   and every historical row are internal-only. No repo writes its own
+   client: the key handling and credit controls below live in one place.
 2. **Main-line alignment before any price comparison.** Alt-line ladders
    (Kalshi strikes, book alt lines) are only comparable at the entry
    aligned to the consensus main line: `lines.align_main_line` /
@@ -172,6 +173,66 @@ CFG = SportConfig(
   (the guest API answers 403 to the cloud session).
 - Fees: `KXNHLGAME` is `quadratic_with_maker_fees` x 1, the other three are
   `quadratic` x 1. Both are handled by `oddsmath.kalshi_taker_fee`.
+
+## The Odds API (0.4.0)
+
+Spec: `docs/THE_ODDS_API_CLIENT_SPEC.md`. Standard library only.
+
+Environment (names only; values never go in a repo, a log or a test):
+
+| Variable | Required | What |
+|---|---|---|
+| `THE_ODDS_API_KEY` | yes | the key, read at call time; absent means a FAILED read |
+| `THE_ODDS_API_MONTHLY_CREDITS` | yes, for any billable call | the plan size the account floor is measured against |
+| `THE_ODDS_API_FLOOR_FRACTION` | no (default 0.20) | refuse a call that would leave less than this share of the plan; must be in [0, 1) |
+
+```python
+from predictium_odds.books import theoddsapi as toa
+
+cfg.extras["theoddsapi_sport"] = "americanfootball_nfl"
+with toa.CreditBudget(job="nfl-publish", cap=60) as budget:
+    read = toa.read_odds(cfg, budget, markets=("h2h", "spreads", "totals"))
+    if read.status == "failed":
+        ...                  # read.report.note says why; read.quotes is None
+```
+
+- **Nothing raises except the budget.** `CreditBudget(job, cap)` raises
+  `ValueError` when `cap` is not a positive int or `job` is empty. That is
+  the one exception that leaves the client, and it is raised in your own
+  code before any request. Every read returns an `OddsApiRead` instead of
+  raising; its notes are built from fixed phrases, the HTTP status and an
+  exception class name, never from the exception text (which carries the
+  URL, and the URL carries the key). KeyboardInterrupt and SystemExit still
+  propagate, with their traceback and context cleared.
+- **Three outcomes.** `captured` (at least one quote), `empty` (no events
+  listed, every listed event in-play, or books have not posted prices yet)
+  and `failed` (no request sent, the provider did not answer usefully, or
+  every listed event or bookmaker dropped as unresolved, which means an
+  alias table broke). A 429 or 5xx that survives the retries is failed,
+  never empty.
+- **The wrapper.** `fetch_game_lines(cfg, budget)` returns the registry
+  shape `(quotes, SourceReport)`. A failed read comes back as
+  `([], report)` with `report.ok` False, so check `report.ok` before
+  reading an empty list as an empty board.
+- **The cap is per run.** It lives in memory on the `CreditBudget`. Each
+  attempt reserves its estimate before it is sent (retries included) and
+  reconciles to `x-requests-last` afterwards. The call that overshoots
+  stands; every later call on that budget is refused. Leaving the `with`
+  block logs `theoddsapi run job=... requests=... spent=... cap=...
+  refused=... remaining=...`; `budget.summary()` returns the same line.
+- **The account floor is advisory.** It rests on the latest
+  `x-requests-remaining` this process saw (probed from the free sports list
+  when unknown), so another process can spend in between. When it bites,
+  the read is failed and a WARNING `theoddsapi account-floor ...` is logged.
+- **Licence on every row.** `book` is `theoddsapi:<bookmaker>` and
+  `extras["license_class"]` is `display_in_model_payloads` or
+  `internal_only`. Pinnacle (exact key `pinnacle`) and every historical row
+  are `internal_only` with `redistributable=False`. Bookmakers outside the
+  committed `BOOKMAKERS` set are skipped and counted.
+- **The client writes nothing.** `read.provenance` holds the endpoint,
+  params without the key, fetch time, HTTP status, body sha256 and credits;
+  `keep_payload=True` also returns the raw body. Storing it is the caller's
+  job, and a historical pull lands as a committed artifact.
 
 ## Tests
 

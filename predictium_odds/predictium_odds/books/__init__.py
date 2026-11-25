@@ -2,12 +2,22 @@
 (list[Quote], SourceReport) so health reporting can never be skipped.
 
 Registry keys are the canonical book tags used in published JSON.
-The Odds API is banned from ingestion org-wide; no adapter for it will be
-accepted. Its 2026-08-02 historical-backfill carve-out is per-task, internal
-only, and never authorizes an adapter here.
+The Odds API ("theoddsapi") is authorized fleet-wide for live, ongoing and
+historical reads (Doyle, 2026-11-21; handover §3). It is the one keyed
+source: every read needs a CreditBudget, the key comes from the environment
+only, and every row carries a license_class. Pinnacle rows and all historical
+rows are internal-only (redistributable=False). Spec:
+docs/THE_ODDS_API_CLIENT_SPEC.md.
 """
 
-from predictium_odds.books import bovada, espn, fanduel, kalshi, pinnacle
+from predictium_odds.books import (
+    bovada,
+    espn,
+    fanduel,
+    kalshi,
+    pinnacle,
+    theoddsapi,
+)
 
 PROVIDERS = {
     "bovada": bovada,
@@ -15,4 +25,5 @@ PROVIDERS = {
     "kalshi": kalshi,
     "espn_dk": espn,
     "pinnacle": pinnacle,
+    "theoddsapi": theoddsapi,
 }
