@@ -2,6 +2,28 @@
 
 Repos pin this package by commit SHA, never a tag or a branch.
 
+## 0.4.0 (2026-11-25)
+
+**New source: `books.theoddsapi`**, the shared The Odds API client
+(spec `docs/THE_ODDS_API_CLIENT_SPEC.md`), registered as `"theoddsapi"`.
+No existing function changes behaviour.
+
+- `read_odds`, `read_event_odds`, `read_historical_odds` return an
+  `OddsApiRead` (captured / empty / failed); `fetch_game_lines` is the
+  registry wrapper, `([], ok=False)` on failure.
+- `CreditBudget(job, cap)` is required on every call: per-run cap,
+  reserve-then-reconcile, a per-request and a per-run log line. An account
+  floor (default 20% of `THE_ODDS_API_MONTHLY_CREDITS`) refuses calls when
+  remaining credits run low.
+- The key is read from `THE_ODDS_API_KEY` inside one helper and cleared in a
+  `finally`; no Exception leaves the client and no note carries exception
+  text. Redirects are refused.
+- Rows are tagged `theoddsapi:<bookmaker>` with a `license_class`; Pinnacle
+  and all historical rows are internal-only.
+- Review nits folded in: a missing `x-requests-remaining` on a billable
+  response lowers the cached remaining by the amount charged; the README
+  names the budget's `ValueError` as the one exception that leaves.
+
 ## 0.3.5 (2026-11-21)
 
 **Bug fix that changes numbers.** `oddsmath.devig_shin` solved Shin's z
