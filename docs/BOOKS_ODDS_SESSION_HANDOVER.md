@@ -579,8 +579,8 @@ In rough priority order:
    is FAILED, never an empty board); per-book rows tagged with the
    bookmaker, with Pinnacle marked `redistributable=False` until Doyle
    rules; and the same `Quote` shape as the keyless adapters, so swapping a
-   source is a config change. To be written as a spec and reviewed before
-   any code.
+   source is a config change. Spec drafted 2026-11-25:
+   `docs/THE_ODDS_API_CLIENT_SPEC.md` (in review; no code before approval).
 ---
 
 ## 8. If you're the SOCCER Books/Odds session
