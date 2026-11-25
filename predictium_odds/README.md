@@ -205,9 +205,10 @@ with toa.CreditBudget(job="nfl-publish", cap=60) as budget:
   URL, and the URL carries the key). KeyboardInterrupt and SystemExit still
   propagate, with their traceback and context cleared.
 - **Three outcomes.** `captured` (at least one quote), `empty` (no events
-  listed, or every listed event in-play) and `failed` (no request sent, the
-  provider did not answer usefully, or every listed event or bookmaker
-  dropped as unresolved). A 429 or 5xx that survives the retries is failed,
+  listed, every listed event in-play, or books have not posted prices yet)
+  and `failed` (no request sent, the provider did not answer usefully, or
+  every listed event or bookmaker dropped as unresolved, which means an
+  alias table broke). A 429 or 5xx that survives the retries is failed,
   never empty.
 - **The wrapper.** `fetch_game_lines(cfg, budget)` returns the registry
   shape `(quotes, SourceReport)`. A failed read comes back as

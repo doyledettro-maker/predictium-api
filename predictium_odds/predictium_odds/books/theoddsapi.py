@@ -531,6 +531,7 @@ class _Counts:
     listed: int = 0
     unresolved: int = 0
     inplay: int = 0
+    no_books: int = 0
     unknown_book: int = 0
     bad_price: int = 0
     resolved_events: int = 0
@@ -560,6 +561,9 @@ def _quotes_from_events(events: list[dict], cfg: SportConfig, ts: str,
         counts.resolved_events += 1
         ekey = cfg.event_key(home, away, str(ev.get("commence_time")))
         sids = {"theoddsapi_event_id": ev.get("id")}
+        if not ev.get("bookmakers"):
+            counts.no_books += 1      # books have not posted yet: normal
+            continue
         for bm in ev.get("bookmakers") or []:
             bkey = bm.get("key") if isinstance(bm, dict) else None
             if bkey not in BOOKMAKERS:
@@ -617,12 +621,21 @@ def _outcome(quotes: list[Quote], counts: _Counts) -> tuple[str, str]:
     if counts.bad_price:
         drops.append(f"{counts.bad_price} bad price")
     detail = ", ".join(drops)
+    if counts.no_books:
+        drops.append(f"{counts.no_books} with no bookmaker prices yet")
+        detail = ", ".join(drops)
     if quotes:
         return "captured", detail
     if counts.listed == 0:
         return "empty", "no events listed"
     if counts.inplay == counts.listed:
         return "empty", "all listed events in-play"
+    if not (counts.unresolved or counts.unknown_book or counts.bad_price):
+        # Portfolio ruling 2026-11-25: listed events with no bookmakers at all
+        # are EMPTY (books post later). FAILED is kept for rows that are
+        # present but unresolved, which means our tables broke.
+        return "empty", (f"{counts.listed} events listed, no bookmaker "
+                         f"prices yet" + (f" ({detail})" if detail else ""))
     return "failed", (f"{counts.listed} listed, 0 priced"
                       + (f": {detail}" if detail else ""))
 

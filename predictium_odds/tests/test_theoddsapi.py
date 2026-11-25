@@ -573,6 +573,33 @@ def test_9_all_bookmakers_unknown_is_failed(net):
     assert read.status == "failed" and "1 unknown bookmaker" in read.report.note
 
 
+def test_9_no_bookmakers_yet_is_empty_not_failed(net):
+    """Portfolio ruling (b): events listed before books post lines are a
+    normal EMPTY; present-but-unresolved stays FAILED."""
+    net(ok([event(books=[]), event(books=[], eid="ev2", home="New York Jets",
+                                   away="Miami Dolphins")]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "empty" and read.quotes == [] and read.report.ok
+    assert "2 events listed, no bookmaker prices yet" in read.report.note
+
+    net(ok([event(books=[]), event(start=PAST, eid="ev2")]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "empty" and read.report.ok
+
+
+def test_9_no_bookmakers_beside_an_unresolved_row_is_failed(net):
+    """One broken alias next to an unposted event is still our tables
+    breaking: FAILED, never hidden behind the normal case."""
+    net(ok([event(books=[]), event(home="Nowhere FC", eid="ev2")]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "failed" and not read.report.ok
+    assert "1 unresolved team" in read.report.note
+    net(ok([event(books=[]), event(books=[bookmaker("mystery")], eid="ev2",
+                                   home="New York Jets", away="Miami Dolphins")]))
+    read = toa.read_odds(CFG, budget())
+    assert read.status == "failed" and "1 unknown bookmaker" in read.report.note
+
+
 def test_9_partial_drops_still_capture(net):
     net(ok([event(), event(home="Nowhere FC", eid="ev2"),
             event(books=[bookmaker("draftkings"), bookmaker("mystery")], eid="ev3",
