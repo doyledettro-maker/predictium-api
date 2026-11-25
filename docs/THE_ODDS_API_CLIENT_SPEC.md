@@ -1,6 +1,7 @@
 # Spec: one shared The Odds API client in `predictium_odds`
 
-Status: DRAFT for Portfolio review (2026-11-25). Spec only; no code lands
+Status: DRAFT for Portfolio review (2026-11-25), revised with Portfolio's
+answers to the four open questions the same day. Spec only; no code lands
 before this is approved. Owner: Books & Odds. Handover §7 item 7.
 
 ## Why
@@ -27,17 +28,19 @@ source by repinning and configuring, never by writing a client.
   standalone feed, no raw dump, no bulk historical file on the public
   bucket") binds publishers, and each repo's upload allowlist enforces it.
   This client only tags every quote so a publisher can tell.
-- No decision on the open questions at the end. They need a ruling.
+- No unratified policy. The four questions the first draft left open were
+  ruled by Portfolio on 2026-11-25 and are recorded under Decisions.
 
 ## Runtime host
 
 The Linux production host the jobs are moving to. The client is
-host-agnostic and reads only its environment. The key reaches that
-environment from the host's own secret mechanism, for example a systemd
-`EnvironmentFile=` owned by the job user with mode 0600. It never comes
-from a command-line argument (visible in `ps`), a crontab line, or a file
-in any repository. Setting that up is Claudia's step on the host and is
-outside this package.
+host-agnostic and reads only its environment. On that host the key and the
+two account-floor settings (D3) reach the environment through a systemd
+`EnvironmentFile=` owned by the job user with mode 0600 (Portfolio,
+2026-11-25). Claudia places the values, and they are never printed. They
+never come from a command-line argument (visible in `ps`), a crontab line,
+or a file in any repository. Setting that up is Claudia's step on the host
+and is outside this package.
 
 ## D1. Module and registration
 
@@ -95,10 +98,37 @@ outside this package.
   read. When `x-requests-last` exceeds the estimate, the run's later
   calls use the actual figure, and the mismatch is logged as a warning so
   the cost table gets fixed.
-- An optional account floor, `min_remaining`: when the last
-  `x-requests-remaining` seen in the run is below it, further calls are
-  refused (FAILED, note `"account floor"`). This protects the shared
-  monthly allowance from one runaway job.
+- **A fleet-wide account floor, on top of every job's own cap**
+  (Portfolio, 2026-11-25). No call may leave the account with fewer than
+  20% of the monthly plan's credits remaining, so the fleet never spends
+  more than 80% of a month's allowance. The floor is configuration, not
+  code, and both values come from the host's environment:
+  - `THE_ODDS_API_MONTHLY_CREDITS`: the plan's monthly credits. It is
+    required. This repository is public, so the plan size is never written
+    here, in a default or in a test.
+  - `THE_ODDS_API_FLOOR_FRACTION`: the share that must stay unspent,
+    default `0.20`, valid only in `[0, 1)`.
+
+  How it works:
+  - Before each request the client refuses the call when
+    `remaining - estimate < floor_fraction * monthly_credits`, where
+    `remaining` is the latest `x-requests-remaining` it has seen. The
+    refusal is a FAILED read with note `"account floor: would leave R
+    credits, floor F"`.
+  - When the process has seen no `x-requests-remaining` yet, it reads one
+    first from a request that costs nothing. The provider documents
+    `GET /v4/sports` as free of quota cost; the implementation verifies
+    that, and the test fixture records it. If that read fails, the
+    billable call is refused (FAILED, `"account floor: remaining
+    unknown"`). The floor fails closed.
+  - A missing or invalid `THE_ODDS_API_MONTHLY_CREDITS`, or a floor
+    fraction outside `[0, 1)`, is a FAILED read with note `"account floor
+    not configured"`. Nothing is sent.
+  - Every refusal by the floor logs one `WARNING` line, with no key and no
+    URL:
+    `theoddsapi account-floor job=<job> remaining=<r> estimate=<e> floor=<f>`.
+    It also sets `report.ok = False`, so `health.evaluate` raises it. A
+    floor that bites shows in the run's health summary.
 - One log line per request, through the caller's logger (default
   `logging.getLogger("predictium_odds.theoddsapi")`), with no key and no
   URL:
@@ -118,7 +148,8 @@ returns None on failure and [] only on a real empty.
   - `report`: a `SourceReport`;
   - `credits`: `{last, used, remaining}`, `None` when no response came back;
   - `provenance`: see D6.
-- **FAILED**: no request was sent (no key, cap, account floor), or the
+- **FAILED**: no request was sent (no key, the job's cap, the account
+  floor, or the floor not configured), or the
   provider did not answer usefully: a transport error, timeout, HTTP 429
   after retries, 5xx after retries, 401, 403, 404, 422, or an unparseable
   body. `report.ok` is False and the note names the cause without the URL.
@@ -150,7 +181,10 @@ returns None on failure and [] only on a real empty.
   through The Odds API is a different source from our direct FanDuel
   adapter. It has a different fetch time, different staleness and
   different terms, and per-book CLV and the health checks must be able to
-  tell them apart. Open question (a) asks whether that is the right tag.
+  tell them apart. Portfolio ruled the tag 2026-11-25: it keeps the source
+  visible in every row and cannot collide with our direct Bovada, FanDuel
+  or Kalshi rows. Alias tables and coverage specs that name these books
+  use the prefixed names.
 - `extras` carries `{"source": "theoddsapi", "bookmaker": <key>,
   "bookmaker_title": <provider title>, "last_update": <provider ISO>,
   "license_class": <see below>}`. `source_ids` carries the provider's
@@ -164,7 +198,9 @@ returns None on failure and [] only on a real empty.
     `license_class="display_in_model_payloads"`: it may appear inside our
     own payloads and pages, never as a standalone feed or dump;
   - every row from a historical endpoint is `redistributable=False` with
-    `license_class="internal_only"` until open question (b) is ruled.
+    `license_class="internal_only"`. Historical pulls are for training and
+    backtests, and only live rows follow the display-in-payload rule
+    (Portfolio, 2026-11-25).
 - **Identity**: team names resolve through `cfg.resolve_team`, the
   committed alias tables, exactly as in every other adapter. There is no
   fuzzy matching. An unresolved event is skipped and counted in the report
@@ -224,7 +260,17 @@ no test needs the key.
    output and the formatted traceback.
 2. The cap refuses before the network. The stub asserts it was not called.
    Retries count against the cap.
-3. The account floor refuses once `remaining` drops below it.
+3. The account floor works as specified. The cases:
+   - it refuses a call that would leave fewer than 20% of a configured
+     monthly figure, and lets through the call just above;
+   - the floor fraction is read from the environment;
+   - a missing or invalid `THE_ODDS_API_MONTHLY_CREDITS`, or an
+     out-of-range fraction, refuses with nothing sent;
+   - with `remaining` unknown, the zero-cost read happens first, and if it
+     fails the billable call is refused;
+   - every refusal logs the WARNING line and sets `report.ok = False`.
+
+   Tests use a made-up plan size, never the real one.
 4. Credit headers are parsed, added to `spent` and returned; the
    estimate-versus-actual mismatch warns.
 5. A 429 retries with the documented backoff and then becomes FAILED, not
@@ -245,29 +291,27 @@ no test needs the key.
 - This spec is approved by Portfolio.
 - The implementation PR has: the module; the `PROVIDERS` entry; the
   rewritten registry docstring; the README section; a CHANGELOG 0.4.0
-  entry; and all eleven tests passing with no network.
+  entry; and all eleven tests passing with no network. The README names
+  the three environment variables (`THE_ODDS_API_KEY`,
+  `THE_ODDS_API_MONTHLY_CREDITS`, `THE_ODDS_API_FLOOR_FRACTION`) without
+  any value.
 - An independent reviewer APPROVEs, run by their own execution, with
   extra attention on D2 (key containment) and D3 (cap before network).
 - Merged and tagged by SHA. Repos adopt it only through their own repin
   PRs.
 - One live smoke read on the Linux host by Claudia, with a cap of a few
   credits, recorded as a committed artifact before any repo schedules it.
+  That read confirms the account floor sees a real `x-requests-remaining`
+  and that the EnvironmentFile supplies all three variables.
 
-## Open questions for Portfolio
+## Decisions (Portfolio, 2026-11-25)
 
-- **(a) Book tag.** Is `"theoddsapi:<bookmaker_key>"` right for `book`?
-  The alternative is the bare bookmaker key plus `extras["source"]`. The
-  prefix keeps direct-book and Odds API rows apart in every existing
-  per-book table; the cost is that the alias tables and coverage specs
-  that name books need the prefixed names.
-- **(b) New historical pulls.** Ruling (c) of 2026-11-21 keeps already
-  pulled historical prices internal. This spec defaults new historical
-  reads to `internal_only` as well. Should new historical pulls instead
-  follow the live display rule (inside model payloads, never a bulk file
-  on the bucket)?
-- **(c) Cap defaults.** Should the package enforce a fleet-wide hard
-  ceiling per call or per run in addition to each job's own cap, or leave
-  all caps to the jobs?
-- **(d) Secret name.** Is `THE_ODDS_API_KEY` the name the Linux host
-  should provide? It matches golf's Keychain item, and every repo should
-  use the same one.
+- **(a) Book tag:** `"theoddsapi:<bookmaker>"` (D5).
+- **(b) Historical pulls:** stay `internal_only`. They are for training and
+  backtests; only live rows follow the display-in-payload rule (D5).
+- **(c) Fleet-wide ceiling:** yes, as the account floor. No call may leave
+  fewer than 20% of the monthly plan, the floor is configuration, and a
+  refusal is logged (D3).
+- **(d) Secret name:** `THE_ODDS_API_KEY`, provided on the Linux host
+  through a 0600 systemd EnvironmentFile. Claudia places the value, and it
+  is never printed (Runtime host, D2).
